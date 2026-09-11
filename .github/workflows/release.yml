@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: musl-static binaries run on any distro (no glibc version
+          # floor), Alpine, and usually Android. Same asset names as before,
+          # so existing caches re-download on the next tag via version check.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            bin: pi-ast-edit
+            asset: pi-ast-edit-linux-x64
+            rustflags: "-C target-feature=+crt-static"
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            bin: pi-ast-edit
+            asset: pi-ast-edit-linux-arm64
+            rustflags: "-C target-feature=+crt-static"
+          # Windows: static CRT so no VC redist is needed on target machines.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: pi-ast-edit.exe
+            asset: pi-ast-edit-win32-x64.exe
+            rustflags: "-C target-feature=+crt-static"
+          - os: macos-13
+            target: x86_64-apple-darwin
+            bin: pi-ast-edit
+            asset: pi-ast-edit-darwin-x64
+            rustflags: ""
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bin: pi-ast-edit
+            asset: pi-ast-edit-darwin-arm64
+            rustflags: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Verify static link (musl)
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: file "target/${{ matrix.target }}/release/${{ matrix.bin }}" | grep -q "statically linked"
+      - name: Run tests
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo test --target ${{ matrix.target }}
+      - name: Rename asset
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: ${{ matrix.asset }}

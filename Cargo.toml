@@ -1,0 +1,29 @@
+[package]
+name = "pi-ast-edit"
+version = "0.1.0"
+edition = "2024"
+description = "AST-aware code editing backend for the pi-ast-edit pi extension"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+ast-grep-core = "0.45.3"
+ast-grep-language = "0.45.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+# Fat LTO for cross-crate optimization. (codegen-units = 1 was measured:
+# no gain over fat LTO alone — parse time lives in tree-sitter C code
+# that Rust flags cannot reach.)
+opt-level = 3
+lto = "fat"
+# No unwinding tables: smaller binary, marginally faster. Safe: errors
+# travel via anyhow::Result, and tests run on the dev profile (unwind).
+panic = "abort"
+strip = true

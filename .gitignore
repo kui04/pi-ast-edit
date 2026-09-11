@@ -1,0 +1,6 @@
+target/
+result/
+node_modules/
+*.tsbuildinfo
+result
+scripts/.env

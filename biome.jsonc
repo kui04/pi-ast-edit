@@ -1,0 +1,35 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"files": {
+		"includes": ["**", "!target", "!node_modules", "!result", "!package-lock.json"]
+	},
+	"formatter": {
+		"indentStyle": "tab",
+		"lineWidth": 100
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			// Everything not listed below stays at Biome's recommended level.
+			// The three rules below ARE recommended (as warnings); error level
+			// makes them fail `biome check` instead of passing silently.
+			"style": {
+				// Type-only imports must use `import type` (already the convention here).
+				"useImportType": "error",
+				// No `!` assertions: agents overuse them to silence narrowing;
+				// handle absence explicitly instead.
+				"noNonNullAssertion": "error"
+			},
+			"suspicious": {
+				// No `any`: use `unknown` and narrow. Keeps agent-written
+				// code honest about what it doesn't know.
+				"noExplicitAny": "error"
+			},
+			"complexity": {
+				// NOT in recommended; enabled here to guard against
+				// agent-written nesting (default threshold 15).
+				"noExcessiveCognitiveComplexity": "error"
+			}
+		}
+	}
+}
