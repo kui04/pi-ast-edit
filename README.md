@@ -158,3 +158,46 @@ Pre-commit gate (clippy, rustfmt, Biome) — install once per clone:
 ```bash
 git config core.hooksPath .githooks
 ```
+
+## Edit-tool telemetry (dev-phase insights loop)
+
+Every `edit` call can be recorded as a per-session custom entry
+(`pi.appendEntry`; does not participate in LLM context, lives in the session
+file, dies with the session). Configured via the `piAstEdit` key of pi's
+global settings file (unknown keys are ignored and preserved by pi):
+
+```jsonc
+// ~/.pi/agent/settings.json
+{
+  "piAstEdit": {
+    "traceEnabled": true,   // default false
+    "insightsLines": 300    // entries considered per analysis run
+  }
+}
+```
+
+Each recorded call carries: mode per edit (pattern/exact with the
+truncated pattern), backend (ast-grep vs builtin fallback), path, applied /
+pre-error / post-error counts, duration, and the error message on failure.
+Recording never throws and cannot break an edit (tools/insights.ts).
+
+Analyze accumulated traces in-session with the session model:
+
+```
+/ast-edit-insights        # last insightsLines entries of this session
+/ast-edit-insights 50     # last 50
+/ast-edit-insights all    # everything
+```
+
+The command reads this session's recorded entries and hands a compact
+digest to the model as a user message; the model clusters failures
+(ambiguous patterns, invalid replacements, rolled-back edits, wrong-mode
+usage), names root causes, and proposes concrete fixes — exact wording for
+tool descriptions / guidelines, schema changes, or bug locations in src/.
+Use the findings to update `promptGuidelines` in tools/edit-tool.ts and
+AGENTS.md.
+
+For headless debugging of the Rust binary itself, the JSON-lines trace
+layer (src/main.rs) is still available via env: `PI_AST_EDIT_TRACE=/path`
+plus optional `PI_AST_EDIT_TRACE_LEVEL=debug` — one JSON line per tracing
+event (per-edit match counts, outcomes, failures).

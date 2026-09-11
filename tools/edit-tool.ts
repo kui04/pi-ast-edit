@@ -3,6 +3,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	type AgentToolResult,
 	createEditToolDefinition,
 	type EditToolDetails,
 	generateDiffString,
@@ -11,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { callBinary, findBinary, redownloadInBackground } from "./binary.ts";
+import { recordEditTrace } from "./insights.ts";
 
 const editSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
@@ -255,17 +257,28 @@ async function builtinFallback(
 	};
 }
 
-async function execute(
+interface EditOutcome {
+	toolResult: AgentToolResult<EditToolDetails | undefined>;
+	binary: "ast-grep" | "builtin-fallback";
+	applied: number;
+	preErrors: number;
+	postErrors: number;
+}
+
+async function performEdit(
 	toolCallId: string,
 	params: EditInput,
 	signal: AbortSignal | undefined,
 	_onUpdate: unknown,
 	ctx: ExtensionContext,
-) {
+): Promise<EditOutcome> {
 	const rawPath = params.path;
 	const path = rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
 
-	if (!findBinary()) return builtinFallback(toolCallId, path, params, signal, ctx);
+	if (!findBinary()) {
+		const toolResult = await builtinFallback(toolCallId, path, params, signal, ctx);
+		return { toolResult, binary: "builtin-fallback", applied: 0, preErrors: 0, postErrors: 0 };
+	}
 	warnedMissing = false;
 
 	const absolutePath = resolve(ctx.cwd, path);
@@ -311,8 +324,65 @@ async function execute(
 
 		const text = formatEditResult(path, result.applied, result.preErrors, result.postErrors);
 		const details: EditToolDetails = { diff, patch, firstChangedLine };
-		return { content: [{ type: "text" as const, text }], details };
+		return {
+			toolResult: { content: [{ type: "text" as const, text }], details },
+			binary: "ast-grep",
+			applied: result.applied.length,
+			preErrors: result.preErrors.length,
+			postErrors: result.postErrors.length,
+		};
 	});
+}
+
+/**
+ * Public execute: runs the edit and records one telemetry entry per call
+ * (session custom entry via pi.appendEntry). Recording never throws, so it
+ * cannot break an edit.
+ */
+async function execute(
+	toolCallId: string,
+	params: EditInput,
+	signal: AbortSignal | undefined,
+	_onUpdate: unknown,
+	ctx: ExtensionContext,
+) {
+	const startedAt = Date.now();
+	const binary: "ast-grep" | "builtin-fallback" = findBinary() ? "ast-grep" : "builtin-fallback";
+	const edits = (params.edits ?? []).map((e) => ({
+		mode: (e.pattern !== undefined ? "pattern" : "exact") as "pattern" | "exact",
+		text: snippet(e.pattern ?? e.oldText ?? "", 120),
+	}));
+	const base = {
+		toolCallId,
+		path: params.path,
+		binary,
+		edits,
+	};
+	try {
+		const outcome = await performEdit(toolCallId, params, signal, _onUpdate, ctx);
+		recordEditTrace({
+			...base,
+			ts: startedAt,
+			result: "ok",
+			applied: outcome.applied,
+			preErrors: outcome.preErrors,
+			postErrors: outcome.postErrors,
+			ms: Date.now() - startedAt,
+		});
+		return outcome.toolResult;
+	} catch (error: unknown) {
+		recordEditTrace({
+			...base,
+			ts: startedAt,
+			result: signal?.aborted ? "aborted" : "error",
+			applied: 0,
+			preErrors: 0,
+			postErrors: 0,
+			error: snippet(error instanceof Error ? error.message : String(error), 500),
+			ms: Date.now() - startedAt,
+		});
+		throw error;
+	}
 }
 
 export function registerEditTool(pi: ExtensionAPI) {

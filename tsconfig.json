@@ -11,5 +11,5 @@
 		"allowJs": true,
 		"skipLibCheck": true
 	},
-	"include": ["index.ts", "tools/**/*.ts"]
+	"include": ["index.ts", "tools/**/*.ts", "tests/ts/**/*.ts"]
 }

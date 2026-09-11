@@ -47,6 +47,8 @@ jobs:
       # Debug build; also produces target/debug/pi-ast-edit for the step below.
       - name: Rust tests
         run: cargo test
+      - name: TypeScript tests (node:test)
+        run: node --test tests/ts/*.test.ts
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Downloader test

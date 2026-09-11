@@ -67,6 +67,7 @@ fn edit_structural(req: &EditRequest, lang: SupportLang) -> Result<EditResult> {
     let ast = lang.ast_grep(&req.content);
     let root = ast.root();
     let pre_errors = collect_errors(&root);
+    tracing::debug!(pre_errors = pre_errors.len(), "structural edit: planning");
     let mut plan: Vec<PlannedEdit> = Vec::new();
     for (i, spec) in req.edits.iter().enumerate() {
         plan.extend(plan_edit(
@@ -155,6 +156,13 @@ fn plan_pattern(
     let ctx = build_context(spec.context.as_deref(), lang, label)?;
     let matches: Vec<GMatch> = filter_context(find_non_nested(root, &pattern), &ctx);
     let selected = select_matches(&matches, spec, label, pattern_src, "pattern")?;
+    tracing::debug!(
+        label = %label,
+        pattern = %truncate(pattern_src, MAX_SNIPPET),
+        matched = matches.len(),
+        selected = selected.len(),
+        "pattern edit"
+    );
     let op = pick_op(spec, label)?;
     let mut out = Vec::new();
     for nm in selected {
@@ -181,6 +189,12 @@ fn plan_exact(
         let matches: Vec<GMatch> = filter_context(find_non_nested(root, &pattern), &ctx);
         if !matches.is_empty() {
             let selected = select_matches(&matches, spec, label, old_text, "text")?;
+            tracing::debug!(
+                label = %label,
+                old_text = %truncate(old_text, MAX_SNIPPET),
+                matched = matches.len(),
+                "exact text matched structurally"
+            );
             let mut out = Vec::new();
             for nm in selected {
                 out.push(build_edit(
@@ -255,6 +269,13 @@ fn plan_exact_text(content: &str, spec: &EditSpec, label: &str) -> Result<Vec<Pl
             list.join("\n")
         );
     };
+    tracing::debug!(
+        label = %label,
+        old_text = %truncate(old_text, MAX_SNIPPET),
+        occurrences = positions.len(),
+        selected = selected.len(),
+        "exact text edit"
+    );
     Ok(selected
         .into_iter()
         .map(|p| PlannedEdit {

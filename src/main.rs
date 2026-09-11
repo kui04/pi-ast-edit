@@ -4,16 +4,52 @@ mod languages;
 mod protocol;
 mod util;
 
+use std::fs::OpenOptions;
+use std::io::Write;
+
 use anyhow::{Result, bail};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
+use tracing_subscriber::prelude::*;
+
+/// JSON-lines trace writer for the edit-insights loop, enabled by the
+/// extension (tools/insights.ts) via PI_AST_EDIT_TRACE. Unwritable paths
+/// degrade to sink — logging must never break an edit. When the env var is
+/// unset the writer is a permanent sink (no file, no I/O).
+fn trace_writer() -> BoxMakeWriter {
+    let path = std::env::var("PI_AST_EDIT_TRACE")
+        .ok()
+        .filter(|p| !p.is_empty());
+    BoxMakeWriter::new(move || match &path {
+        Some(path) => OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map(|f| Box::new(f) as Box<dyn Write + Send + Sync>)
+            .unwrap_or_else(|error| {
+                eprintln!("pi-ast-edit: trace file `{path}` unwritable ({error}); dropping trace");
+                Box::new(std::io::sink()) as Box<dyn Write + Send + Sync>
+            }),
+        None => Box::new(std::io::sink()) as Box<dyn Write + Send + Sync>,
+    })
+}
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+    let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")));
+    let trace_level = std::env::var("PI_AST_EDIT_TRACE_LEVEL")
+        .map(EnvFilter::new)
+        .unwrap_or_else(|_| EnvFilter::new("debug"));
+    tracing_subscriber::registry()
+        .with(stderr_layer)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(trace_writer())
+                .with_filter(trace_level),
+        )
         .init();
 
     match run() {

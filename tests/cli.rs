@@ -283,3 +283,52 @@ fn edit_preserves_missing_trailing_newline() {
     assert_eq!(out["newContent"], "bar();");
     assert!(!out["newContent"].as_str().unwrap().ends_with('\n'));
 }
+
+#[test]
+fn trace_file_gets_json_lines_when_enabled() {
+    // PI_AST_EDIT_TRACE enables the JSON-lines trace layer (the edit-insights
+    // loop); the log must carry both the info outcome and the per-edit debug
+    // event enriched in src/edit.rs.
+    let trace = std::env::temp_dir().join(format!("pi-ast-edit-trace-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&trace);
+    let req = serde_json::json!({
+        "content": "foo(1);",
+        "edits": [{ "pattern": "foo($A)", "replace": "bar($A)" }]
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pi-ast-edit"))
+        .args(["edit", "--path", "x.js"])
+        .env("PI_AST_EDIT_TRACE", &trace)
+        .env("PI_AST_EDIT_TRACE_LEVEL", "debug")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pi-ast-edit");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(req.to_string().as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(0));
+    let content = std::fs::read_to_string(&trace).expect("trace file written");
+    let _ = std::fs::remove_file(&trace);
+    let parsed: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("trace line is JSON"))
+        .collect();
+    assert!(
+        parsed
+            .iter()
+            .any(|l| l["fields"]["message"] == "edit applied"),
+        "{content}"
+    );
+    assert!(
+        parsed
+            .iter()
+            .any(|l| l["fields"]["message"] == "pattern edit" && l["fields"]["matched"] == 1),
+        "{content}"
+    );
+}

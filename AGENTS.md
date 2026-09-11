@@ -60,3 +60,23 @@ pi's environment, so provider API keys (`OPENAI_API_KEY`, ...) belong there too.
 - Release: tag push (`git tag vX.Y.Z && git push origin vX.Y.Z`) → `release.yml` builds
   musl-static linux x64/arm64, darwin x64/arm64, win32 x64 and attaches them to the GitHub
   release; `checks.yml` runs as a publish gate.
+
+## Edit-tool telemetry
+
+Every `edit` call is optionally recorded as a per-session custom entry
+(pi.appendEntry, customType `piAstEditTrace` — session-scoped, not sent to
+LLM). Config: `piAstEdit` key in `~/.pi/agent/settings.json` (pi preserves
+unknown settings keys): `traceEnabled` (default false) and `insightsLines`
+(default 300). `recordEditTrace` in tools/insights.ts never throws —
+telemetry must not break an edit; records stay compact (mode, truncated
+pattern, counts, error) with no file contents.
+
+`/ast-edit-insights [N|all]` reads the current session's recorded entries
+and sends a digest to the session model for clustering + concrete fix
+proposals (guideline wording, schema changes, src/ bugs). Keep records
+compact and structured — the command stringifies them as-is.
+
+Headless dev tracing of the Rust binary stays env-driven:
+`PI_AST_EDIT_TRACE` (+ `PI_AST_EDIT_TRACE_LEVEL`) enables the JSON-lines
+layer in src/main.rs; debug events live in src/edit.rs. Unwritable paths
+degrade to sink.
