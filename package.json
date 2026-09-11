@@ -4,9 +4,13 @@
 	"private": true,
 	"type": "module",
 	"description": "pi extension: ast-grep powered code editing",
-	"keywords": ["pi-package"],
+	"keywords": [
+		"pi-package"
+	],
 	"pi": {
-		"extensions": ["index.ts"]
+		"extensions": [
+			"index.ts"
+		]
 	},
 	"repository": {
 		"type": "git",

@@ -4,3 +4,4 @@ node_modules/
 *.tsbuildinfo
 result
 scripts/.env
+/.pre-commit-config.yaml

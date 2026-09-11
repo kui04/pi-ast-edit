@@ -5,6 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
+    git-hooks.url = "github:cachix/git-hooks.nix";
   };
 
   outputs =
@@ -13,6 +14,7 @@
       nixpkgs,
       rust-overlay,
       flake-utils,
+      git-hooks,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -49,18 +51,63 @@
           inherit src;
           cargoLock.lockFile = ./Cargo.lock;
         };
+        # Pre-commit hooks via nix. Installed into the dev shell (shellHook);
+        # can also run all of them manually with `nix fmt`.
+        # Not wired into `checks`: clippy needs the cargo dependency cache, which
+        # `nix flake check`'s sandbox (no network) cannot provide. CI covers the
+        # same checks in .github/workflows/checks.yml anyway.
+        pre-commit-check = git-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            clippy = {
+              # Use the dev shell toolchain (1.98.1) so incremental cargo cache
+              # is compatible; the default nixpkgs rustc (1.97.x) would
+              # recompile everything and still hit E0514 on target/.
+              enable = true;
+              packageOverrides = {
+                cargo = rustToolchain;
+                clippy = rustToolchain;
+              };
+              settings = {
+                # Match CI: cargo clippy --all-targets -- -D warnings
+                denyWarnings = true;
+                extraArgs = "--all-targets";
+              };
+            };
+            rustfmt = {
+              enable = true;
+              # Check-only, matching CI's `cargo fmt --check`.
+              settings.check = true;
+            };
+            biome = {
+              enable = true;
+              settings = {
+                # Check-only (no --write), matching CI's `biome ci`.
+                write = false;
+                flags = "--error-on-warnings";
+              };
+            };
+            actionlint.enable = true;
+          };
+        };
       in
       {
         packages.default = piAstEdit;
         packages.pi-ast-edit = piAstEdit;
         packages.pi-ast-edit-static = piAstEditStatic;
 
+        # Run every hook once: nix fmt
+        formatter = pkgs.writeShellScriptBin "pre-commit-run" ''
+          ${pkgs.lib.getExe pre-commit-check.package} run --all-files --config ${pre-commit-check.configFile}
+        '';
+
         devShells.default = pkgs.mkShell {
+          inherit (pre-commit-check) shellHook;
           packages = [
             rustToolchain
             pkgs.nodejs
             pkgs.gcc # tree-sitter grammars are compiled with cc
-          ];
+          ] ++ pre-commit-check.enabledPackages;
         };
       }
     );
