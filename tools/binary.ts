@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,14 +9,29 @@ const EXT_DIR = dirname(HERE); // extension root (repo root)
 
 // The binary is provisioned at install time by scripts/postinstall.mjs
 // (pi runs `npm install` for git packages, which executes postinstall).
-// Resolution here is local-only; a missing binary is a loud error, not a
-// silent download: install-time is the correct moment to fetch it.
+// postinstall downloads into ~/.pi/agent/cache/pi-ast-edit/<triple>/<asset>;
+// resolution here checks local builds first, then that cache. A missing
+// binary is a loud error, not a silent download: install-time is the
+// correct moment to fetch it.
 function realpathSafe(p: string): string | null {
 	try {
 		return realpathSync(p);
 	} catch {
 		return null;
 	}
+}
+
+/** Mirrors assetTriple()/assetName() in scripts/postinstall.mjs. */
+function cacheCandidate(): string | null {
+	const platform =
+		process.platform === "linux" || process.platform === "darwin" || process.platform === "win32"
+			? process.platform
+			: null;
+	const arch = process.arch === "x64" || process.arch === "arm64" ? process.arch : null;
+	if (!platform || !arch) return null;
+	const triple = `pi-ast-edit-${platform}-${arch}`;
+	const exe = platform === "win32" ? ".exe" : "";
+	return join(homedir(), ".pi", "agent", "cache", "pi-ast-edit", triple, `${triple}${exe}`);
 }
 
 function candidatePaths(): string[] {
@@ -27,6 +43,8 @@ function candidatePaths(): string[] {
 		candidates.push(join(base, "target", "debug", "pi-ast-edit"));
 		candidates.push(join(base, "result", "bin", "pi-ast-edit"));
 	}
+	const cached = cacheCandidate();
+	if (cached) candidates.push(cached);
 	return candidates;
 }
 
@@ -39,7 +57,7 @@ export function findBinary(): string | null {
 
 export const BINARY_HINT = [
 	"pi-ast-edit binary not found.",
-	"It is downloaded during `npm install` (postinstall) — re-run installation,",
+	"Install the extension (npm install runs postinstall, which downloads it),",
 	"or build it in the extension repo:",
 	"  nix build            # or: nix develop -c cargo build --release",
 	"or set PI_AST_EDIT_BIN to the binary path.",
