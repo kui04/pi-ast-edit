@@ -62,8 +62,8 @@ tree-sitter grammars (28 languages, compiled in)
 From GitHub (the real flow) — the binary downloads during install:
 
 ```bash
-pi install git:github.com/<owner>/pi-ast-edit
-# or try without installing: pi -e git:github.com/<owner>/pi-ast-edit
+pi install git:github.com/kui04/pi-ast-edit
+# or try without installing: pi -e git:github.com/kui04/pi-ast-edit
 ```
 
 For local development, build the binary and load the repo directly
