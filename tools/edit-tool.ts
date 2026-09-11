@@ -3,13 +3,14 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	createEditToolDefinition,
 	type EditToolDetails,
 	generateDiffString,
 	generateUnifiedPatch,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { callBinary } from "./binary.ts";
+import { callBinary, findBinary, redownloadInBackground } from "./binary.ts";
 
 const editSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
@@ -174,8 +175,88 @@ function formatEditResult(
 	return lines.join("\n");
 }
 
+/** Agent-facing notice prepended to a fallback edit result. */
+const MISSING_BINARY_NOTICE = [
+	"pi-ast-edit binary is unavailable, so this edit was applied by pi's built-in",
+	"exact-text editor instead of ast-grep (oldText/newText now match exactly; no",
+	"whitespace-insensitive AST matching). A background re-download was started —",
+	"reinstall or rebuild the extension to restore ast-grep editing.",
+].join(" ");
+
+/** Short user-facing warning — rendered on its own notify line, not in the input. */
+const MISSING_BINARY_WARNING =
+	"pi-ast-edit binary missing — using built-in edit fallback (re-downloading).";
+
+const MISSING_BINARY_STRUCTURAL = [
+	"pi-ast-edit binary is unavailable: edits using pattern/replace/insertBefore/",
+	"insertAfter/delete need it and were NOT applied. Retry with oldText/newText",
+	"(exact text), or restore the binary by reinstalling the extension.",
+	"A background re-download was started.",
+].join(" ");
+
+let warnedMissing = false;
+
+type BuiltinEdit = { oldText: string; newText: string };
+
+/** Built-in edit entries, or null when any edit needs the ast-grep binary. */
+function toBuiltinEdits(edits: EditInput["edits"]): BuiltinEdit[] | null {
+	const out: BuiltinEdit[] = [];
+	for (const e of edits) {
+		if (typeof e.oldText !== "string" || typeof e.newText !== "string") return null;
+		if (
+			e.pattern !== undefined ||
+			e.replace !== undefined ||
+			e.insertBefore !== undefined ||
+			e.insertAfter !== undefined ||
+			e.delete !== undefined ||
+			e.context !== undefined ||
+			e.matchIndex !== undefined ||
+			e.all !== undefined
+		) {
+			return null;
+		}
+		out.push({ oldText: e.oldText, newText: e.newText });
+	}
+	return out;
+}
+
+/**
+ * Binary missing: warn the user once, start a background re-download, and
+ * keep the agent working — plain oldText/newText edits run through pi's
+ * built-in editor; structural (ast-grep) edits return an explanatory error.
+ */
+async function builtinFallback(
+	toolCallId: string,
+	path: string,
+	params: EditInput,
+	signal: AbortSignal | undefined,
+	ctx: ExtensionContext,
+) {
+	if (!warnedMissing) {
+		warnedMissing = true;
+		// console.* from extensions renders inside the TUI input line, so only
+		// use it when there is no UI (print/RPC); otherwise use the notify line.
+		if (ctx.hasUI) ctx.ui.notify(MISSING_BINARY_WARNING, "warning");
+		else console.warn(`pi-ast-edit: ${MISSING_BINARY_WARNING}`);
+	}
+	redownloadInBackground();
+	const edits = toBuiltinEdits(params.edits);
+	if (!edits) throw new Error(MISSING_BINARY_STRUCTURAL);
+	const result = await createEditToolDefinition(ctx.cwd).execute(
+		toolCallId,
+		{ path, edits },
+		signal,
+		undefined,
+		ctx,
+	);
+	return {
+		...result,
+		content: [{ type: "text" as const, text: MISSING_BINARY_NOTICE }, ...result.content],
+	};
+}
+
 async function execute(
-	_toolCallId: string,
+	toolCallId: string,
 	params: EditInput,
 	signal: AbortSignal | undefined,
 	_onUpdate: unknown,
@@ -183,6 +264,10 @@ async function execute(
 ) {
 	const rawPath = params.path;
 	const path = rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
+
+	if (!findBinary()) return builtinFallback(toolCallId, path, params, signal, ctx);
+	warnedMissing = false;
+
 	const absolutePath = resolve(ctx.cwd, path);
 
 	return withFileMutationQueue(absolutePath, async () => {

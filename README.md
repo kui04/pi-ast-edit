@@ -76,9 +76,13 @@ pi -e ./index.ts
 
 The binary is located automatically in this order:
 `PI_AST_EDIT_BIN` env var → `target/release/pi-ast-edit` →
-`target/debug/pi-ast-edit` → `result/bin/pi-ast-edit`.
-A missing binary is a loud error — the binary is provisioned at install time
-(see below), not downloaded on first use.
+`target/debug/pi-ast-edit` → `result/bin/pi-ast-edit` →
+`~/.pi/agent/cache/pi-ast-edit/<platform>/` (postinstall cache).
+When no binary is found, the `edit` tool never blocks: it warns once, falls
+back immediately to pi's built-in exact-text editor for `oldText`/`newText`
+edits (structural ast-grep edits return an explanatory error instead), and
+starts one background re-download so a later call self-heals.
+`ast_find`/`ast_languages` fail fast with a hint (they have no fallback).
 
 ### Install-time download
 
@@ -99,7 +103,8 @@ git tag v0.1.0 && git push origin v0.1.0
 
 The download source comes from the `repository` field of `package.json`
 (override with `PI_AST_EDIT_REPO=owner/repo`). Delete
-`~/.pi/agent/cache/pi-ast-edit/` to force a re-download.
+`~/.pi/agent/cache/pi-ast-edit/` to force a re-download (a missing cache is
+also re-downloaded in the background on the next tool call).
 
 ## Usage
 

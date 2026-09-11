@@ -1,7 +1,14 @@
 {
 	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
 	"files": {
-		"includes": ["**", "!target", "!node_modules", "!result", "!package-lock.json"]
+		"includes": [
+			"**",
+			"!target",
+			"!node_modules",
+			"!result",
+			"!package-lock.json",
+			"!.pre-commit-config.yaml"
+		]
 	},
 	"formatter": {
 		"indentStyle": "tab",

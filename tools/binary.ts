@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cacheBinaryPath, configuredRepo, downloadToCache } from "../scripts/provision.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../tools
 const EXT_DIR = dirname(HERE); // extension root (repo root)
@@ -11,27 +11,15 @@ const EXT_DIR = dirname(HERE); // extension root (repo root)
 // (pi runs `npm install` for git packages, which executes postinstall).
 // postinstall downloads into ~/.pi/agent/cache/pi-ast-edit/<triple>/<asset>;
 // resolution here checks local builds first, then that cache. A missing
-// binary is a loud error, not a silent download: install-time is the
-// correct moment to fetch it.
+// binary never blocks a tool call: the edit tool immediately falls back to
+// pi's built-in exact-text editor, and a background re-download is started
+// (deduped, cooled down) so a later call finds the cache repopulated.
 function realpathSafe(p: string): string | null {
 	try {
 		return realpathSync(p);
 	} catch {
 		return null;
 	}
-}
-
-/** Mirrors assetTriple()/assetName() in scripts/postinstall.mjs. */
-function cacheCandidate(): string | null {
-	const platform =
-		process.platform === "linux" || process.platform === "darwin" || process.platform === "win32"
-			? process.platform
-			: null;
-	const arch = process.arch === "x64" || process.arch === "arm64" ? process.arch : null;
-	if (!platform || !arch) return null;
-	const triple = `pi-ast-edit-${platform}-${arch}`;
-	const exe = platform === "win32" ? ".exe" : "";
-	return join(homedir(), ".pi", "agent", "cache", "pi-ast-edit", triple, `${triple}${exe}`);
 }
 
 function candidatePaths(): string[] {
@@ -43,7 +31,7 @@ function candidatePaths(): string[] {
 		candidates.push(join(base, "target", "debug", "pi-ast-edit"));
 		candidates.push(join(base, "result", "bin", "pi-ast-edit"));
 	}
-	const cached = cacheCandidate();
+	const cached = cacheBinaryPath();
 	if (cached) candidates.push(cached);
 	return candidates;
 }
@@ -55,12 +43,38 @@ export function findBinary(): string | null {
 	return null;
 }
 
+let redownloadPromise: Promise<string | null> | null = null;
+let lastRedownloadAttempt = 0;
+const REDOWNLOAD_COOLDOWN_MS = 60_000;
+
+/**
+ * Fire-and-forget self-heal: kick off one background re-download when the
+ * binary is missing, so a later call finds the cache repopulated. Never
+ * blocks the caller; deduped while in flight and cooled down between
+ * attempts so a broken/offline download is not retried on every call.
+ */
+export function redownloadInBackground(): void {
+	if (redownloadPromise) return;
+	const now = Date.now();
+	if (now - lastRedownloadAttempt < REDOWNLOAD_COOLDOWN_MS) return;
+	const repo = configuredRepo(EXT_DIR);
+	if (!repo) return;
+	lastRedownloadAttempt = now;
+	redownloadPromise = downloadToCache(repo)
+		.catch(() => null)
+		.finally(() => {
+			redownloadPromise = null;
+		});
+}
+
 export const BINARY_HINT = [
 	"pi-ast-edit binary not found.",
 	"Install the extension (npm install runs postinstall, which downloads it),",
 	"or build it in the extension repo:",
 	"  nix build            # or: nix develop -c cargo build --release",
 	"or set PI_AST_EDIT_BIN to the binary path.",
+	"A background re-download was started; the edit tool falls back to pi's",
+	"built-in exact-text edit in the meantime.",
 ].join("\n");
 
 export async function runBinary(
@@ -68,7 +82,10 @@ export async function runBinary(
 	input?: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	const bin = findBinary();
-	if (!bin) throw new Error(BINARY_HINT);
+	if (!bin) {
+		redownloadInBackground();
+		throw new Error(BINARY_HINT);
+	}
 	return new Promise((resolve, reject) => {
 		const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
 		let stdout = "";
