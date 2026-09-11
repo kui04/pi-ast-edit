@@ -11,7 +11,10 @@ on:
   # Called by release.yml as a gate before publishing.
   workflow_call:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # NB: github.workflow resolves to the CALLER's workflow name when this
+  # file runs via workflow_call, so a generic group would collide with the
+  # caller's concurrency group and deadlock (GH discussion #30708).
+  group: checks-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
