@@ -30,25 +30,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux: musl-static binaries run on any distro (no glibc version
-          # floor), Alpine, and usually Android. Same asset names as before,
-          # so existing caches re-download on the next tag via version check.
+          # Linux: fully static musl via nix. Deterministic (same flake as
+          # local dev) and no rustup/musl-tools maintenance. Same asset names
+          # as before, so existing caches re-download on the next tag.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            bin: pi-ast-edit
+            nix: true
             asset: pi-ast-edit-linux-x64
-            rustflags: "-C target-feature=+crt-static -C link-arg=-static"
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            bin: pi-ast-edit
+            nix: true
             asset: pi-ast-edit-linux-arm64
-            rustflags: "-C target-feature=+crt-static -C link-arg=-static"
           # Windows: static CRT so no VC redist is needed on target machines.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: pi-ast-edit.exe
             asset: pi-ast-edit-win32-x64.exe
             rustflags: "-C target-feature=+crt-static"
+          # macOS: rustup builds, one runner per arch.
           - os: macos-15-intel
             target: x86_64-apple-darwin
             bin: pi-ast-edit
@@ -66,38 +63,44 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Install musl tools
-        if: contains(matrix.target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      # --- Linux: nix static build ---
+      - name: Install Nix
+        if: matrix.nix
+        uses: nixbuild/nix-quick-install-action@v35
+      - name: Build static binary with nix
+        if: matrix.nix
+        run: |
+          out=$(nix build .#pi-ast-edit-static --print-out-paths)
+          cp "$out/bin/pi-ast-edit" "${{ matrix.asset }}"
+      - name: Verify static link
+        if: matrix.nix
+        run: file "${{ matrix.asset }}" | tee /dev/stderr | grep -qE "static-pie|statically"
+
+      # --- Windows/macOS: rustup build ---
       - name: Install Rust toolchain (channel from rust-toolchain.toml)
+        if: ${{ !matrix.nix }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - name: Cache cargo
+        if: ${{ !matrix.nix }}
         uses: Swatinem/rust-cache@v2
       - name: Build release binary
+        if: ${{ !matrix.nix }}
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Verify static link (musl)
-        if: contains(matrix.target, 'musl')
-        shell: bash
-        run: file "target/${{ matrix.target }}/release/${{ matrix.bin }}" | tee /dev/stderr | grep -q "statically linked"
       - name: Run tests
+        if: ${{ !matrix.nix }}
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo test --target ${{ matrix.target }}
       - name: Rename asset
+        if: ${{ !matrix.nix }}
         shell: bash
         run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:
