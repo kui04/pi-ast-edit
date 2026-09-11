@@ -4,6 +4,10 @@
 	"private": true,
 	"type": "module",
 	"description": "pi extension: ast-grep powered code editing",
+	"keywords": ["pi-package"],
+	"pi": {
+		"extensions": ["index.ts"]
+	},
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/kui04/pi-ast-edit.git"
