@@ -5,3 +5,4 @@ node_modules/
 result
 scripts/.env
 /.pre-commit-config.yaml
+/.direnv/
