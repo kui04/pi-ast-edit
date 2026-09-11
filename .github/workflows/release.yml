@@ -11,8 +11,17 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
+  # Shared checks (same suite as CI). The release job below needs this green.
+  check:
+    # Job-level permissions flow into the called workflow (per docs,
+    # caller-declared permissions can only be maintained, never elevated).
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml
+
   build:
     strategy:
       fail-fast: false
@@ -25,12 +34,12 @@ jobs:
             target: x86_64-unknown-linux-musl
             bin: pi-ast-edit
             asset: pi-ast-edit-linux-x64
-            rustflags: "-C target-feature=+crt-static"
+            rustflags: "-C target-feature=+crt-static -C link-arg=-static"
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             bin: pi-ast-edit
             asset: pi-ast-edit-linux-arm64
-            rustflags: "-C target-feature=+crt-static"
+            rustflags: "-C target-feature=+crt-static -C link-arg=-static"
           # Windows: static CRT so no VC redist is needed on target machines.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -57,6 +66,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
@@ -64,22 +74,46 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --target ${{ matrix.target }}
       - name: Verify static link (musl)
         if: contains(matrix.target, 'musl')
         shell: bash
-        run: file "target/${{ matrix.target }}/release/${{ matrix.bin }}" | grep -q "statically linked"
+        run: file "target/${{ matrix.target }}/release/${{ matrix.bin }}" | tee /dev/stderr | grep -q "statically linked"
       - name: Run tests
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo test --target ${{ matrix.target }}
       - name: Rename asset
         shell: bash
         run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes only when checks AND every build leg succeed: a failed leg
+  # skips this job, so a partial release can never be published.
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: "pi-ast-edit-*"
+          merge-multiple: true
+          path: assets
       - name: Attach to release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: ${{ matrix.asset }}
+          files: assets/*

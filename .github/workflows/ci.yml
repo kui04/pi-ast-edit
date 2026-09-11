@@ -16,30 +16,8 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      - name: Install dev dependencies
-        run: npm ci
-      - name: Typecheck extension
-        run: npx tsc --noEmit
-      - name: Biome check
-        run: npx @biomejs/biome ci --error-on-warnings .
-      # Debug build; also produces target/debug/pi-ast-edit for the step below.
-      - name: Rust tests
-        run: cargo test
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Downloader test
-        run: node scripts/test-downloader.mjs
+    # Job-level permissions flow into the called workflow (per docs,
+    # caller-declared permissions can only be maintained, never elevated).
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml

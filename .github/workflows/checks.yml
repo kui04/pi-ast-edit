@@ -1,0 +1,40 @@
+name: checks
+
+# Shared check suite, called by ci.yml (push/PR) and release.yml (gated
+# before publishing). Single source of truth — do not duplicate these steps.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dev dependencies
+        run: npm ci
+      - name: Typecheck extension
+        run: npx tsc --noEmit
+      - name: Biome check
+        run: npx @biomejs/biome ci --error-on-warnings .
+      # Debug build; also produces target/debug/pi-ast-edit for the step below.
+      - name: Rust tests
+        run: cargo test
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Downloader test
+        run: node scripts/test-downloader.mjs
