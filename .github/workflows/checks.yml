@@ -1,9 +1,18 @@
 name: checks
 
-# Shared check suite, called by ci.yml (push/PR) and release.yml (gated
-# before publishing). Single source of truth — do not duplicate these steps.
+# CI entry (push/PR) and shared check suite, called by release.yml as a
+# publish gate. Single source of truth — do not duplicate these steps.
 on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+  # Called by release.yml as a gate before publishing.
   workflow_call:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -13,15 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.98.1
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
+      - name: Install Rust toolchain (channel from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm

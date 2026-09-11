@@ -10,9 +10,12 @@ on:
         required: true
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
+concurrency:
+  # Serialize releases: never publish while another release run is active.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   # Shared checks (same suite as CI). The release job below needs this green.
   check:
@@ -46,7 +49,7 @@ jobs:
             bin: pi-ast-edit.exe
             asset: pi-ast-edit-win32-x64.exe
             rustflags: "-C target-feature=+crt-static"
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             bin: pi-ast-edit
             asset: pi-ast-edit-darwin-x64
@@ -57,18 +60,21 @@ jobs:
             asset: pi-ast-edit-darwin-arm64
             rustflags: ""
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain (channel from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.1
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
       - name: Build release binary
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
@@ -104,7 +110,11 @@ jobs:
   # skips this job, so a partial release can never be published.
   release:
     needs: [check, build]
+    # Only the release job needs write access: it creates the GitHub release.
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Download all binaries
         uses: actions/download-artifact@v8
