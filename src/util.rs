@@ -232,10 +232,13 @@ mod tests {
         assert!(scan_vars("$home").is_empty());
         assert!(scan_vars("${x}").is_empty());
         // uppercase IS a meta var name, matching ast-grep
-        assert_eq!(scan_vars("$HOME"), vec![("HOME".to_string(), false)]);        
+        assert_eq!(scan_vars("$HOME"), vec![("HOME".to_string(), false)]);
         assert_eq!(scan_vars("$MY_VAR"), vec![("MY_VAR".to_string(), false)]);
         assert_eq!(scan_vars("$VAR1"), vec![("VAR1".to_string(), false)]);
-        assert_eq!(scan_vars("$A$B"), vec![("A".to_string(), false), ("B".to_string(), false)]);
+        assert_eq!(
+            scan_vars("$A$B"),
+            vec![("A".to_string(), false), ("B".to_string(), false)]
+        );
         // anonymous ellipsis has no name
         assert!(scan_vars("foo($$$)").is_empty());
     }

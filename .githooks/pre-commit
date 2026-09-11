@@ -23,11 +23,11 @@ cargo clippy --all-targets -- -D warnings
 echo "==> cargo fmt --check"
 cargo fmt --check
 
-echo "==> biome check"
+echo "==> biome ci"
 if [ -x node_modules/.bin/biome ]; then
-	node_modules/.bin/biome check --error-on-warnings .
+	node_modules/.bin/biome ci --error-on-warnings .
 else
-	npx --yes @biomejs/biome check --error-on-warnings .
+	npx --yes @biomejs/biome ci --error-on-warnings .
 fi
 
 echo "pre-commit: all green"

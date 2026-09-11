@@ -19,12 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -33,7 +35,7 @@ jobs:
       - name: Typecheck extension
         run: npx tsc --noEmit
       - name: Biome check
-        run: npx @biomejs/biome check --error-on-warnings .
+        run: npx @biomejs/biome ci --error-on-warnings .
       # Debug build; also produces target/debug/pi-ast-edit for the step below.
       - name: Rust tests
         run: cargo test
