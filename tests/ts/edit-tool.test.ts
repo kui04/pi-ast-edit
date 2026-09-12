@@ -6,7 +6,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerEditTool } from "../../tools/edit-tool.ts";
-import type { EditTraceRecord } from "../../tools/insights.ts";
+import type { EditTraceRecord } from "../../tools/reflect.ts";
 
 /**
  * F: execute-wrapper integration tests. Drive the real `edit` tool through
@@ -29,12 +29,12 @@ const hasBinary = existsSync(BIN);
 const agentDir = mkdtempSync(join(tmpdir(), "piastedit-agent-"));
 writeFileSync(
 	join(agentDir, "settings.json"),
-	JSON.stringify({ piAstEdit: { traceEnabled: true } }),
+	JSON.stringify({ "ast-edit": { traceEnabled: true } }),
 );
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_AST_EDIT_BIN = BIN;
 
-const traceLog = join(agentDir, "pi-ast-edit", "edits.jsonl");
+const traceLog = join(agentDir, "ast-edit.log.jsonl");
 
 const cwd = mkdtempSync(join(tmpdir(), "piastedit-cwd-"));
 

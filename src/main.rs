@@ -13,8 +13,8 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::prelude::*;
 
-/// JSON-lines trace writer for the edit-insights loop, enabled by the
-/// extension (tools/insights.ts) via PI_AST_EDIT_TRACE. Unwritable paths
+/// JSON-lines trace writer for the edit-tool reflection loop, enabled by the
+/// extension (tools/reflect.ts) via PI_AST_EDIT_TRACE. Unwritable paths
 /// degrade to sink — logging must never break an edit. When the env var is
 /// unset the writer is a permanent sink (no file, no I/O).
 fn trace_writer() -> BoxMakeWriter {

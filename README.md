@@ -73,22 +73,34 @@ nix build                     # binary → result/bin/pi-ast-edit
 Commit through the shell — `nix develop -c git commit` (hooks need its
 toolchain; never `--no-verify`).
 
-## Telemetry
+## Telemetry & reflection
 
-Optional: append one JSON line per `edit` call to a single log file
-(`~/.pi/agent/pi-ast-edit/edits.jsonl`, each with its session id) and analyze
-failures with the session model. Enable via `~/.pi/agent/settings.json`:
+**Reflection** is on by default and needs no log: the failed `edit` tool
+results on the current session branch are its input. Once `reflectAfterErrors`
+new failures (3 by default) have piled up since the last verdict, the end of a
+turn triggers one clean session-independent model request (no conversation,
+tools, or prompts — only the failure lines); the verdict is posted into the
+transcript as a custom message (`ast-edit.reflection`), queued for the next
+turn — no extra agent turn is started, and the same failures are not reflected
+on twice (the marker travels with the verdict). Everything is derived from the
+session itself, so restarts and compaction do not disturb it.
+
+**Telemetry** is a developer log, off by default: with `traceEnabled` set,
+every `edit` call appends one JSON line to `~/.pi/agent/ast-edit.log.jsonl` for
+grepping with `jq`/`grep`.
+
+Both are configured via `~/.pi/agent/settings.json`:
 
 ```jsonc
 {
-  "piAstEdit": {
-    "traceEnabled": true,   // default false
-    "tracePath": "…",       // optional override; default under the agent dir
-    "insightsLines": 300
+  "ast-edit": {
+    "traceEnabled": true,  // optional; OFF by default — developer log of every edit call
+    "tracePath": "…",      // optional override; default `~/.pi/agent/ast-edit.log.jsonl`
+    "autoReflect": false,  // optional; ON by default — reflect after turns with new failures
+    "reflectModel": "provider/modelId", // optional; default = the session model
+    "reflectAfterErrors": 5 // optional; reflect once this many new failures piled up (default 3)
   }
 }
 ```
 
-Then run `/ast-edit-insights` (optional count or `all`) — the model clusters
-failure patterns of the current session and proposes concrete fixes for the
-tool's guidelines. Developers can also grep the log file directly.
+Fully passive — there is no command to run.

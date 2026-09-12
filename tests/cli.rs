@@ -286,9 +286,9 @@ fn edit_preserves_missing_trailing_newline() {
 
 #[test]
 fn trace_file_gets_json_lines_when_enabled() {
-    // PI_AST_EDIT_TRACE enables the JSON-lines trace layer (the edit-insights
-    // loop); the log must carry both the info outcome and the per-edit debug
-    // event enriched in src/edit.rs.
+    // PI_AST_EDIT_TRACE enables the JSON-lines trace layer (the edit-tool
+    // reflection loop); the log must carry both the info outcome and the
+    // per-edit debug event enriched in src/edit.rs.
     let trace = std::env::temp_dir().join(format!("pi-ast-edit-trace-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&trace);
     let req = serde_json::json!({

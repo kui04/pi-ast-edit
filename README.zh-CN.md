@@ -59,18 +59,24 @@ nix build                     # 二进制 → result/bin/pi-ast-edit
 
 E2E(较慢,需要真实模型):`cp scripts/.env.example scripts/.env`,设置 `PI_E2E_MODEL`,然后 `nix develop -c node scripts/test-e2e.mjs`。提交请在 shell 内进行 —— `nix develop -c git commit`(pre-commit 钩子依赖 shell 的工具链;不要用 `--no-verify`)。
 
-## 遥测(telemetry)
+## 遥测与反思(telemetry & reflection)
 
-可选:每次 `edit` 调用追加一行 JSON 到单个日志文件(`~/.pi/agent/pi-ast-edit/edits.jsonl`,每条带 session id),用会话模型分析失败模式。在 `~/.pi/agent/settings.json` 中启用:
+**反思默认开启,且不需要日志**:输入就是当前会话分支上失败的 `edit` 工具结果。当自上次结论以来新失败累积到 `reflectAfterErrors` 条(默认 3)时,回合结束后会发起一次干净的、与会话无关的模型请求(不含对话、工具或提示词,只有失败行)做一次反思,并把结论作为一条自定义消息(`ast-edit.reflection`)写入对话记录、排给下一轮——不会额外触发一轮 agent;已反思过的失败不会重复反思(marker 随结论消息一起保存)。一切都从会话本身推导,重启与压缩都不会打乱。
+
+**遥测是开发者日志,默认关闭**:开启 `traceEnabled` 后,每次 `edit` 调用追加一行 JSON 到 `~/.pi/agent/ast-edit.log.jsonl`,方便用 `jq`/`grep` 分析。
+
+两项均在 `~/.pi/agent/settings.json` 中配置:
 
 ```jsonc
 {
-  "piAstEdit": {
-    "traceEnabled": true,   // 默认 false
-    "tracePath": "…",       // 可选覆盖;默认在 agent 目录下
-    "insightsLines": 300
+  "ast-edit": {
+    "traceEnabled": true,  // 可选;默认关闭 — 记录每次 edit 调用的开发者日志
+    "tracePath": "…",      // 可选覆盖;默认 `~/.pi/agent/ast-edit.log.jsonl`
+    "autoReflect": false,  // 可选;默认开启 — 有新失败时回合后自动反思
+    "reflectModel": "provider/modelId", // 可选;默认与主模型一致
+    "reflectAfterErrors": 5 // 可选;新失败累积到多少条才反思(默认 3)
   }
 }
 ```
 
-然后运行 `/ast-edit-insights`(可带数量参数或 `all`)—— 模型会归纳当前 session 的失败模式,并为工具的提示词规则提出具体改进。开发者也可以直接 grep 日志文件。并为工具的提示词规则提出具体改进。
+完全被动——没有需要手动执行的命令。

@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { callBinary, findBinary, redownloadInBackground } from "./binary.ts";
-import { recordEditTrace } from "./insights.ts";
+import { recordEditTrace } from "./reflect.ts";
 
 const editSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),

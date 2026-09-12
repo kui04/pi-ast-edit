@@ -185,7 +185,7 @@ console.log("missing-binary ok");
 	symlinkSync(join(repo, "node_modules"), join(ext6, "node_modules"), "dir");
 	cpSync(join(repo, "tools", "edit-tool.ts"), join(ext6, "tools", "edit-tool.ts"));
 	cpSync(join(repo, "tools", "binary.ts"), join(ext6, "tools", "binary.ts"));
-	cpSync(join(repo, "tools", "insights.ts"), join(ext6, "tools", "insights.ts"));
+	cpSync(join(repo, "tools", "reflect.ts"), join(ext6, "tools", "reflect.ts"));
 	cpSync(join(repo, "scripts", "provision.mjs"), join(ext6, "scripts", "provision.mjs"));
 	writeFileSync(
 		join(ext6, "package.json"),
