@@ -74,7 +74,16 @@ pub fn collect_errors(root: &GNode) -> Vec<SyntaxError> {
 pub fn format_errors(errors: &[SyntaxError]) -> String {
     errors
         .iter()
-        .map(|e| format!("  line {}, col {}: {}", e.line, e.col, e.text))
+        // One error per line, even when the node text is multi-line: escaped
+        // newlines keep each entry scannable for the agent.
+        .map(|e| {
+            format!(
+                "  line {}, col {}: {}",
+                e.line,
+                e.col,
+                e.text.replace('\n', "\\n")
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -274,5 +283,18 @@ mod tests {
         assert_eq!(truncate("abc", 3), "abc");
         assert_eq!(truncate("abcd", 3), "abc…");
         assert_eq!(truncate("", 3), "");
+    }
+
+    #[test]
+    fn test_format_errors_one_line_per_error() {
+        // multi-line node text must not leak line breaks into the report
+        let errs = vec![crate::protocol::SyntaxError {
+            line: 1,
+            col: 1,
+            text: "name: checks\njobs:".into(),
+        }];
+        let s = format_errors(&errs);
+        assert_eq!(s, "  line 1, col 1: name: checks\\njobs:");
+        assert_eq!(s.lines().count(), 1);
     }
 }

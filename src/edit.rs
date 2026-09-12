@@ -187,7 +187,13 @@ fn plan_exact(
     {
         let ctx = build_context(spec.context.as_deref(), lang, label)?;
         let matches: Vec<GMatch> = filter_context(find_non_nested(root, &pattern), &ctx);
-        if !matches.is_empty() {
+        // Structural matching is only a faithful exact-mode replacement when
+        // every matched node covers EXACTLY the oldText bytes. For
+        // indentation-sensitive languages (YAML), a pattern can parse into
+        // nodes whose range skips leading whitespace or extends past the
+        // pattern text — replacing such a node garbles the file (e.g. doubled
+        // indentation). Fall back to plain text search instead.
+        if !matches.is_empty() && matches.iter().all(|nm| nm.text() == old_text) {
             let selected = select_matches(&matches, spec, label, old_text, "text")?;
             tracing::debug!(
                 label = %label,
@@ -804,6 +810,75 @@ mod tests {
         // "= 5" is not a single AST node → plain text search
         let r = run_edits("let a = 5;", "x.js", vec![exact_edit("= 5", "= 6")]).unwrap();
         assert_eq!(r.new_content, "let a = 6;");
+    }
+
+    #[test]
+    fn exact_mode_yaml_standalone_line_still_structural() {
+        // A top-level YAML line without leading whitespace parses to a node
+        // whose text IS the oldText — structural matching stays valid.
+        let yaml = ["name: checks", "cancel-in-progress: true", "", ""].join("\n");
+        let r = run_edits(
+            &yaml,
+            "checks.yml",
+            vec![exact_edit(
+                "cancel-in-progress: true",
+                "cancel-in-progress: false",
+            )],
+        )
+        .unwrap();
+        assert!(r.new_content.contains("cancel-in-progress: false"));
+        assert!(r.post_errors.is_empty(), "{:?}", r.post_errors);
+    }
+
+    #[test]
+    fn exact_mode_yaml_indented_block_falls_back_to_text() {
+        // Regression: an indented multi-line oldText parses as a YAML pattern
+        // whose match skips leading whitespace and extends past the pattern
+        // (block_sequence node). The structural match must NOT be used — it
+        // would replace a misaligned range and double the indentation.
+        // Falling back to plain text search keeps the file intact.
+        let yaml = [
+            "name: checks",
+            "jobs:",
+            "  check:",
+            "    steps:",
+            "      - name: Typecheck extension",
+            "        run: npx tsc --noEmit",
+            "      - name: TypeScript tests (node:test)",
+            "        run: node --test tests/ts/",
+            "      - name: Biome check",
+            "        run: npx @biomejs/biome ci .",
+            "",
+        ]
+        .join("\n");
+        let old = [
+            "      - name: Typecheck extension",
+            "        run: npx tsc --noEmit",
+            "      - name: TypeScript tests (node:test)",
+            "        run: node --test tests/ts/",
+        ]
+        .join("\n");
+        let new = [
+            "      - name: Typecheck extension",
+            "        run: npx tsc --noEmit",
+            "      - name: TypeScript tests (node:test)",
+            "        # runs against the compiled binary",
+            "        run: node --test tests/ts/",
+        ]
+        .join("\n");
+        let r = run_edits(&yaml, "checks.yml", vec![exact_edit(&old, &new)]).unwrap();
+        assert!(
+            r.new_content
+                .contains("        # runs against the compiled binary"),
+            "{}",
+            r.new_content
+        );
+        assert!(
+            r.new_content.contains("      - name: Typecheck extension"),
+            "no doubled indent: {}",
+            r.new_content
+        );
+        assert_eq!(r.applied.len(), 1);
     }
 
     #[test]
