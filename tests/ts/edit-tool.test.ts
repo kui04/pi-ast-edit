@@ -6,14 +6,14 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerEditTool } from "../../tools/edit-tool.ts";
-import { type EditTraceRecord, initInsights } from "../../tools/insights.ts";
+import type { EditTraceRecord } from "../../tools/insights.ts";
 
 /**
  * F: execute-wrapper integration tests. Drive the real `edit` tool through
  * the public registerEditTool() surface against the compiled binary
- * (PI_AST_EDIT_BIN); telemetry is captured via a fake pi appendEntry spy.
- * Skipped when the binary isn't built — same check `nix build`/dev builds
- * produce.
+ * (PI_AST_EDIT_BIN); telemetry is captured from the JSONL trace log under a
+ * temp agent dir. Skipped when the binary isn't built — same check
+ * `nix build`/dev builds produce.
  */
 
 const BIN = join(
@@ -34,14 +34,9 @@ writeFileSync(
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_AST_EDIT_BIN = BIN;
 
-const cwd = mkdtempSync(join(tmpdir(), "piastedit-cwd-"));
+const traceLog = join(agentDir, "pi-ast-edit", "edits.jsonl");
 
-const appended: EditTraceRecord[] = [];
-const capturePi = {
-	registerCommand: () => {},
-	appendEntry: (_t: string, data?: unknown) => appended.push(data as EditTraceRecord),
-} as unknown as ExtensionAPI;
-initInsights(capturePi);
+const cwd = mkdtempSync(join(tmpdir(), "piastedit-cwd-"));
 
 type ToolLike = {
 	name: string;
@@ -61,7 +56,20 @@ const toolPi = {
 } as unknown as ExtensionAPI;
 registerEditTool(toolPi);
 const editTool = recorders[0];
-const ctx = { cwd } as never;
+const ctx = {
+	cwd,
+	sessionManager: { getSessionId: () => "test-session" },
+} as never;
+
+/** Last record appended to the trace log, or null when none. */
+function lastTraceRecord(): EditTraceRecord | null {
+	try {
+		const lines = readFileSync(traceLog, "utf8").trim().split("\n");
+		return JSON.parse(lines[lines.length - 1]) as EditTraceRecord;
+	} catch {
+		return null;
+	}
+}
 
 after(() => {
 	delete process.env.PI_CODING_AGENT_DIR;
@@ -95,10 +103,12 @@ test("F1: pattern edit success records ok with applied count", { skip: !hasBinar
 	const result = await runEdit(path, [{ pattern: "foo($A)", replace: "bar($A)" }]);
 	assert.match(result.content[0].text, /Applied 1 edit/);
 	assert.equal(readFileSync(path, "utf8"), "bar(1);");
-	const rec = appended[appended.length - 1];
+	const rec = lastTraceRecord();
+	assert.ok(rec, "trace record written");
 	assert.equal(rec.result, "ok");
 	assert.equal(rec.applied, 1);
 	assert.equal(rec.edits[0].mode, "pattern");
+	assert.equal(rec.sessionId, "test-session");
 });
 
 test("F2: ambiguous pattern -> error record, file unchanged", { skip: !hasBinary }, async () => {
@@ -109,7 +119,8 @@ test("F2: ambiguous pattern -> error record, file unchanged", { skip: !hasBinary
 		/matches 2 nodes/,
 	);
 	assert.equal(readFileSync(path, "utf8"), original);
-	const rec = appended[appended.length - 1];
+	const rec = lastTraceRecord();
+	assert.ok(rec, "trace record written");
 	assert.equal(rec.result, "error");
 	assert.match(rec.error ?? "", /matches 2 nodes/);
 });
@@ -119,7 +130,8 @@ test("F3: missing file -> error record", { skip: !hasBinary }, async () => {
 		runEdit(join(cwd, "missing.js"), [{ oldText: "x", newText: "y" }]),
 		/Could not edit file/,
 	);
-	const rec = appended[appended.length - 1];
+	const rec = lastTraceRecord();
+	assert.ok(rec, "trace record written");
 	assert.equal(rec.result, "error");
 	assert.match(rec.error ?? "", /Could not edit file/);
 });
@@ -135,7 +147,8 @@ test("F4: aborted signal -> aborted record", { skip: !hasBinary }, async () => {
 		),
 		/aborted/i,
 	);
-	const rec = appended[appended.length - 1];
+	const rec = lastTraceRecord();
+	assert.ok(rec, "trace record written");
 	assert.equal(rec.result, "aborted");
 });
 
@@ -144,7 +157,8 @@ test("F5: exact oldText edit records mode exact", { skip: !hasBinary }, async ()
 	const result = await runEdit(path, [{ oldText: "world", newText: "there" }]);
 	assert.match(result.content[0].text, /Applied 1 edit/);
 	assert.equal(readFileSync(path, "utf8"), "hello there");
-	const rec = appended[appended.length - 1];
+	const rec = lastTraceRecord();
+	assert.ok(rec, "trace record written");
 	assert.equal(rec.result, "ok");
 	assert.equal(rec.edits[0].mode, "exact");
 });

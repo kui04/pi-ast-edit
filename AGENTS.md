@@ -36,4 +36,4 @@ toolchain; never `--no-verify`. CI checks (`checks.yml`) mirror these commands; 
   → `target/release` → postinstall cache — local builds first, download last.
   Missing: `edit` falls back to pi's builtin; `ast_find`/`ast_languages` fail fast.
 - Release: tag push → `release.yml` builds 6 platform binaries; `checks.yml` runs as gate.
-- Telemetry: session entries via `pi.appendEntry` — never throw, stay compact (no file contents).
+- Telemetry: JSONL trace file (default `agentDir/pi-ast-edit/edits.jsonl`) — never throw, stay compact (no file contents).

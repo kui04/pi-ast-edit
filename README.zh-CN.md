@@ -61,10 +61,16 @@ E2E(较慢,需要真实模型):`cp scripts/.env.example scripts/.env`,设置 `PI
 
 ## 遥测(telemetry)
 
-可选:把每次 `edit` 调用记录为 session 条目,用会话模型分析失败模式。在 `~/.pi/agent/settings.json` 中启用:
+可选:每次 `edit` 调用追加一行 JSON 到单个日志文件(`~/.pi/agent/pi-ast-edit/edits.jsonl`,每条带 session id),用会话模型分析失败模式。在 `~/.pi/agent/settings.json` 中启用:
 
 ```jsonc
-{ "piAstEdit": { "traceEnabled": true, "insightsLines": 300 } }
+{
+  "piAstEdit": {
+    "traceEnabled": true,   // 默认 false
+    "tracePath": "…",       // 可选覆盖;默认在 agent 目录下
+    "insightsLines": 300
+  }
+}
 ```
 
-然后运行 `/ast-edit-insights`(可带数量参数或 `all`)—— 模型会归纳失败模式,并为工具的提示词规则提出具体改进。
+然后运行 `/ast-edit-insights`(可带数量参数或 `all`)—— 模型会归纳当前 session 的失败模式,并为工具的提示词规则提出具体改进。开发者也可以直接 grep 日志文件。并为工具的提示词规则提出具体改进。

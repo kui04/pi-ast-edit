@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -7,18 +7,19 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	buildDigest,
 	compactRecord,
+	defaultTracePath,
 	type EditTraceRecord,
-	initInsights,
 	isTraceRecord,
 	loadTraceConfig,
+	readTraceLog,
 	recordEditTrace,
-	traceEntries,
+	registerInsightsCommand,
 } from "../../tools/insights.ts";
 
 /**
  * Telemetry unit tests (node:test, zero deps). Config tests point
- * PI_CODING_AGENT_DIR at a temp dir; recordEditTrace uses a fake pi whose
- * appendEntry collects calls.
+ * PI_CODING_AGENT_DIR at a temp dir; recordEditTrace writes a JSONL trace
+ * log under the agent dir.
  */
 
 function withAgentDir(settings: unknown): string {
@@ -34,11 +35,17 @@ afterEach(() => {
 	dirsToClean.length = 0;
 });
 const dirsToClean: string[] = [];
+function tempDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "piastedit-test-"));
+	dirsToClean.push(dir);
+	return dir;
+}
 
 function record(overrides: Partial<EditTraceRecord> = {}): EditTraceRecord {
 	return {
 		ts: 1_700_000_000_000,
 		toolCallId: "call_1",
+		sessionId: "s1",
 		binary: "ast-grep",
 		edits: [{ mode: "pattern", text: "foo($A)" }],
 		path: "src/x.js",
@@ -51,18 +58,10 @@ function record(overrides: Partial<EditTraceRecord> = {}): EditTraceRecord {
 	};
 }
 
-function fakePi(appended: Array<[string, unknown]>): ExtensionAPI {
-	return {
-		registerCommand: () => {},
-		appendEntry: (type: string, data?: unknown) => appended.push([type, data]),
-	} as unknown as ExtensionAPI;
-}
-
 // --- A. loadTraceConfig -----------------------------------------------------
 
 test("A1: missing settings file -> defaults", () => {
-	const dir = mkdtempSync(join(tmpdir(), "piastedit-config-"));
-	dirsToClean.push(dir);
+	const dir = tempDir();
 	process.env.PI_CODING_AGENT_DIR = dir; // no settings.json written
 	assert.deepEqual(loadTraceConfig(), { traceEnabled: false, insightsLines: 300 });
 });
@@ -119,72 +118,50 @@ test("A9: insightsLines fraction floored", () => {
 	assert.equal(loadTraceConfig().insightsLines, 2);
 });
 
-// --- B. traceEntries / isTraceRecord ----------------------------------------
-
-test("B1: matching custom entry kept", () => {
-	const rec = record();
-	const ctx = {
-		sessionManager: {
-			getEntries: () => [{ type: "custom", customType: "piAstEditTrace", data: rec }],
-		},
-	};
-	assert.deepEqual(
-		traceEntries(ctx).map((e) => e.data),
-		[rec],
-	);
-});
-
-test("B2: other customType dropped", () => {
-	const ctx = {
-		sessionManager: {
-			getEntries: () => [{ type: "custom", customType: "other-ext", data: record() }],
-		},
-	};
-	assert.deepEqual(traceEntries(ctx), []);
-});
-
-test("B3: custom_message entry dropped", () => {
-	const ctx = {
-		sessionManager: {
-			getEntries: () => [{ type: "custom_message", customType: "piAstEditTrace", content: "" }],
-		},
-	};
-	assert.deepEqual(traceEntries(ctx), []);
-});
-
-test("B4: missing/undefined data dropped", () => {
-	const ctx = {
-		sessionManager: { getEntries: () => [{ type: "custom", customType: "piAstEditTrace" }] },
-	};
-	assert.deepEqual(traceEntries(ctx), []);
-});
-
-test("B5: malformed data dropped", () => {
-	const malformed: unknown[] = [
-		{ ts: "1700000000000", toolCallId: "c" }, // ts string
-		{ ts: 1, toolCallId: 42 }, // toolCallId not string
-		null,
-		[],
-		{},
-	];
-	for (const data of malformed) {
-		const ctx = {
-			sessionManager: {
-				getEntries: () => [{ type: "custom", customType: "piAstEditTrace", data }],
-			},
-		};
-		assert.deepEqual(traceEntries(ctx), [], JSON.stringify(data));
+test("A10: tracePath honored when string, ignored otherwise; default under agent dir", () => {
+	withAgentDir({ piAstEdit: { tracePath: "/tmp/custom-trace.jsonl" } });
+	assert.equal(loadTraceConfig().tracePath, "/tmp/custom-trace.jsonl");
+	for (const bad of [42, true, ""]) {
+		withAgentDir({ piAstEdit: { tracePath: bad } });
+		assert.equal(loadTraceConfig().tracePath, undefined, `tracePath=${JSON.stringify(bad)}`);
 	}
+	const dir = tempDir();
+	process.env.PI_CODING_AGENT_DIR = dir;
+	assert.equal(defaultTracePath(), join(dir, "pi-ast-edit", "edits.jsonl"));
 });
 
-test("B6: isTraceRecord rejects non-objects", () => {
+// --- B. isTraceRecord / readTraceLog ----------------------------------------
+
+test("B1: isTraceRecord rejects non-records", () => {
 	for (const bad of [42, [], {}, null, undefined, "x"]) {
 		assert.equal(isTraceRecord(bad), false, JSON.stringify(bad));
 	}
 	assert.equal(isTraceRecord(record()), true);
 });
 
-// --- C. compactRecord --------------------------------------------------------
+test("B2: malformed data dropped by readTraceLog", () => {
+	const dir = tempDir();
+	process.env.PI_CODING_AGENT_DIR = dir;
+	writeFileSync(
+		join(dir, "trace.jsonl"),
+		[
+			"not json",
+			JSON.stringify({ ts: "1700000000000", toolCallId: "c" }), // ts string
+			JSON.stringify(record({ path: "ok.js" })),
+			"",
+		].join("\n"),
+	);
+	assert.deepEqual(
+		readTraceLog(join(dir, "trace.jsonl")).map((r) => r.path),
+		["ok.js"],
+	);
+});
+
+test("B3: missing trace file -> empty", () => {
+	assert.deepEqual(readTraceLog("/nonexistent/trace.jsonl"), []);
+});
+
+// --- C. compactRecord -------------------------------------------------------
 
 test("C1: full ok record rendered", () => {
 	const line = compactRecord(record());
@@ -264,35 +241,158 @@ test("D3: budget boundary — later records skipped once 60k is exhausted", () =
 	assert.ok(lines.length >= 70); // budget, not an off-by-one, cut the tail
 });
 
-// --- E. recordEditTrace ------------------------------------------------------
+// --- E. recordEditTrace (file model) ----------------------------------------
 
-test("E2: traceEnabled false -> no append", () => {
-	withAgentDir({});
-	const appended: Array<[string, unknown]> = [];
-	initInsights(fakePi(appended));
-	recordEditTrace(record());
-	assert.equal(appended.length, 0);
-});
-
-test("E3: traceEnabled true -> one append with custom type and record", () => {
-	withAgentDir({ piAstEdit: { traceEnabled: true } });
-	const appended: Array<[string, unknown]> = [];
-	initInsights(fakePi(appended));
-	const rec = record();
-	recordEditTrace(rec);
-	assert.equal(appended.length, 1);
-	assert.equal(appended[0][0], "piAstEditTrace");
-	assert.equal(appended[0][1], rec);
-});
-
-test("E4: appendEntry throwing is swallowed", () => {
-	withAgentDir({ piAstEdit: { traceEnabled: true } });
-	const pi = {
-		registerCommand: () => {},
-		appendEntry: () => {
-			throw new Error("disk full");
-		},
-	} as unknown as ExtensionAPI;
-	initInsights(pi);
+test("E1: trace off by default (no settings) -> no file written", () => {
+	const dir = tempDir();
+	process.env.PI_CODING_AGENT_DIR = dir;
 	assert.doesNotThrow(() => recordEditTrace(record()));
+	assert.equal(existsSync(join(dir, "pi-ast-edit", "edits.jsonl")), false);
+});
+
+test("E2: traceEnabled false -> no file written", () => {
+	const dir = withAgentDir({ piAstEdit: { traceEnabled: false } });
+	recordEditTrace(record());
+	assert.equal(existsSync(join(dir, "pi-ast-edit", "edits.jsonl")), false);
+});
+
+test("E3: traceEnabled true -> one JSON line with all fields", () => {
+	const dir = withAgentDir({ piAstEdit: { traceEnabled: true } });
+	recordEditTrace(record());
+	const log = join(dir, "pi-ast-edit", "edits.jsonl");
+	const parsed = readTraceLog(log);
+	assert.equal(parsed.length, 1);
+	assert.deepEqual(parsed[0], record());
+});
+
+test("E4: records append as lines, order preserved", () => {
+	const dir = withAgentDir({ piAstEdit: { traceEnabled: true } });
+	recordEditTrace(record({ toolCallId: "a", path: "a.js" }));
+	recordEditTrace(record({ toolCallId: "b", path: "b.js" }));
+	const parsed = readTraceLog(join(dir, "pi-ast-edit", "edits.jsonl"));
+	assert.deepEqual(
+		parsed.map((r) => r.path),
+		["a.js", "b.js"],
+	);
+});
+
+test("E5: custom tracePath honored", () => {
+	const custom = join(tempDir(), "custom-name.jsonl");
+	withAgentDir({
+		piAstEdit: { traceEnabled: true, tracePath: custom },
+	});
+	recordEditTrace(record());
+	assert.equal(existsSync(custom), true);
+	assert.equal(readTraceLog(custom).length, 1);
+});
+
+test("E6: unwritable tracePath swallowed (never throws)", () => {
+	const dir = tempDir();
+	process.env.PI_CODING_AGENT_DIR = dir;
+	writeFileSync(
+		join(dir, "settings.json"),
+		JSON.stringify({
+			piAstEdit: { traceEnabled: true, tracePath: join(dir, "blocker", "x.jsonl") },
+		}),
+	);
+	// `blocker` exists as a file, so mkdirSync(dirname) fails with ENOTDIR.
+	writeFileSync(join(dir, "blocker"), "i am a file, not a dir");
+	assert.doesNotThrow(() => recordEditTrace(record()));
+});
+
+// --- F. /ast-edit-insights command ------------------------------------------
+
+/** Fake pi capturing the registered command and sent messages. */
+function makeCommandPi() {
+	const defs: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }> = [];
+	const sent: string[] = [];
+	const pi = {
+		registerCommand: (
+			name: string,
+			def: { handler: (args: string, ctx: unknown) => Promise<void> },
+		) => defs.push({ name, handler: def.handler }),
+		sendUserMessage: (msg: string) => sent.push(msg),
+	} as unknown as ExtensionAPI;
+	registerInsightsCommand(pi);
+	const found = defs.find((d) => d.name === "ast-edit-insights");
+	assert.ok(found, "ast-edit-insights registered");
+	return { handler: found.handler, sent };
+}
+
+function sessionCtx(sessionId: string, notices: string[]): unknown {
+	return {
+		ui: { notify: (msg: string) => notices.push(msg) },
+		sessionManager: { getSessionId: () => sessionId },
+	};
+}
+
+test("F1: filters to current session, most recent first, sends digest", async () => {
+	const dir = withAgentDir({ piAstEdit: { traceEnabled: true } });
+	mkdirSync(join(dir, "pi-ast-edit"));
+	const log = join(dir, "pi-ast-edit", "edits.jsonl");
+	const recs = [
+		record({ toolCallId: "1", sessionId: "s1", path: "one.js" }),
+		record({ toolCallId: "2", sessionId: "s2", path: "two.js" }),
+		record({ toolCallId: "3", sessionId: "s1", path: "three.js" }),
+	];
+	writeFileSync(log, recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+	const { handler, sent } = makeCommandPi();
+	await handler("", sessionCtx("s1", []));
+
+	assert.ok(sent.length === 1, "sendUserMessage called once");
+	const msg = sent[0];
+	assert.match(msg, /three\.js/);
+	assert.match(msg, /one\.js/);
+	assert.doesNotMatch(msg, /two\.js/); // other session filtered out
+	// most recent first: three.js before one.js
+	assert.ok(msg.indexOf("three.js") < msg.indexOf("one.js"));
+});
+
+test("F2: no records for session -> notify, no send", async () => {
+	const dir = withAgentDir({ piAstEdit: { traceEnabled: true } });
+	mkdirSync(join(dir, "pi-ast-edit"));
+	writeFileSync(
+		join(dir, "pi-ast-edit", "edits.jsonl"),
+		JSON.stringify(record({ sessionId: "s2" })) + "\n",
+	);
+
+	const { handler, sent } = makeCommandPi();
+	const notices: string[] = [];
+	await handler("", sessionCtx("s1", notices));
+
+	assert.equal(sent.length, 0);
+	assert.ok(notices.length === 1 && notices[0].includes("no recorded edit calls"));
+});
+
+test("F3: missing trace file -> notify, no send", async () => {
+	withAgentDir({ piAstEdit: { traceEnabled: true } });
+	const { handler, sent } = makeCommandPi();
+	const notices: string[] = [];
+	await handler("", sessionCtx("s1", notices));
+	assert.equal(sent.length, 0);
+	assert.ok(notices.length === 1 && notices[0].includes("no recorded edit calls"));
+});
+
+test("F4: N and all arguments honored", async () => {
+	const dir = withAgentDir({ piAstEdit: { traceEnabled: true } });
+	mkdirSync(join(dir, "pi-ast-edit"));
+	const recs = Array.from({ length: 5 }, (_, i) =>
+		record({ toolCallId: `${i}`, sessionId: "s1", path: `r${i}.js` }),
+	);
+	writeFileSync(
+		join(dir, "pi-ast-edit", "edits.jsonl"),
+		recs.map((r) => JSON.stringify(r)).join("\n") + "\n",
+	);
+
+	const { handler, sent } = makeCommandPi();
+	await handler("2", sessionCtx("s1", []));
+	// tail 2, most recent first
+	assert.ok(sent[0].indexOf("r4.js") > -1 && sent[0].indexOf("r3.js") > -1);
+	assert.ok(sent[0].indexOf("r4.js") < sent[0].indexOf("r3.js"));
+	assert.doesNotMatch(sent[0], /r2\.js/);
+
+	await handler("all", sessionCtx("s1", []));
+	assert.equal((sent[1].match(/r\d\.js/g) ?? []).length, 5);
+	assert.ok(sent[1].indexOf("r4.js") < sent[1].indexOf("r0.js")); // most recent first
 });

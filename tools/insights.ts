@@ -1,28 +1,36 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /**
- * Edit-tool telemetry, stored as per-session custom entries (pi.appendEntry).
- * Config lives in the `piAstEdit` key of pi's global settings file
- * (`~/.pi/agent/settings.json`); pi ignores and preserves unknown settings
- * keys, so this key round-trips safely.
+ * Edit-tool telemetry: one JSON line per edit call appended to a single log
+ * file (default `<agentDir>/pi-ast-edit/edits.jsonl`), so developers can
+ * grep/analyze it directly. Config lives in the `piAstEdit` key of pi's
+ * global settings file (`~/.pi/agent/settings.json`); pi ignores and
+ * preserves unknown settings keys, so this key round-trips safely.
  *
  * ```jsonc
  * {
  *   "piAstEdit": {
- *     "traceEnabled": true,   // default false; records every edit call in the session
- *     "insightsLines": 300    // entries analyzed per /ast-edit-insights run
+ *     "traceEnabled": true,   // default false; records every edit call
+ *     "tracePath": "…",       // optional override; default under the agent dir
+ *     "insightsLines": 300    // records analyzed per /ast-edit-insights run
  *   }
  * }
  * ```
  */
 const CONFIG_KEY = "piAstEdit";
-const TRACE_CUSTOM_TYPE = "piAstEditTrace";
 
 export interface TraceConfig {
 	traceEnabled: boolean;
+	/** Absolute path of the trace log; default `defaultTracePath()`. */
+	tracePath?: string;
 	insightsLines: number;
+}
+
+/** Default log file: `<agentDir>/pi-ast-edit/edits.jsonl`. */
+export function defaultTracePath(): string {
+	return join(getAgentDir(), "pi-ast-edit", "edits.jsonl");
 }
 
 export function loadTraceConfig(): TraceConfig {
@@ -33,6 +41,9 @@ export function loadTraceConfig(): TraceConfig {
 		if (ext && typeof ext === "object") {
 			const e = ext as Record<string, unknown>;
 			if (typeof e.traceEnabled === "boolean") cfg.traceEnabled = e.traceEnabled;
+			if (typeof e.tracePath === "string" && e.tracePath.length > 0) {
+				cfg.tracePath = e.tracePath;
+			}
 			if (typeof e.insightsLines === "number" && e.insightsLines > 0) {
 				cfg.insightsLines = Math.floor(e.insightsLines);
 			}
@@ -51,6 +62,8 @@ function readSettingsFile(): string {
 export interface EditTraceRecord {
 	ts: number;
 	toolCallId: string;
+	/** Session id at call time, when available. */
+	sessionId?: string;
 	/** Which backend ran the call. */
 	binary: "ast-grep" | "builtin-fallback";
 	/** Per-edit summary: mode + the pattern/text at stake (truncated). */
@@ -65,44 +78,21 @@ export interface EditTraceRecord {
 	ms: number;
 }
 
-let piRef: ExtensionAPI | null = null;
-
 /**
- * Record one edit-tool call as a session custom entry. Never throws — a
- * logging failure must not break an edit.
+ * Append one edit-tool call as a JSON line to the trace log. Never throws —
+ * a logging failure must not break an edit. Config is re-read per call, so
+ * toggling `traceEnabled` applies from the next edit.
  */
 export function recordEditTrace(record: EditTraceRecord): void {
-	if (!piRef) return;
-	if (!traceConfigCache.traceEnabled) return;
+	const cfg = loadTraceConfig();
+	if (!cfg.traceEnabled) return;
 	try {
-		piRef.appendEntry(TRACE_CUSTOM_TYPE, record);
+		const path = cfg.tracePath ?? defaultTracePath();
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(path, `${JSON.stringify(record)}\n`);
 	} catch {
 		// ignore: telemetry must never break the edit
 	}
-}
-
-// Read once at extension load; /ast-edit-insights re-reads so config changes
-// apply without restarting pi.
-let traceConfigCache = loadTraceConfig();
-
-const MAX_DIGEST_CHARS = 60_000;
-const MAX_LINE_CHARS = 800;
-
-type CustomEntryLike = {
-	type: "custom";
-	customType?: string;
-	data?: unknown;
-	timestamp?: string;
-};
-
-export function traceEntries(ctx: {
-	sessionManager: { getEntries(): unknown[] };
-}): Array<{ data: EditTraceRecord }> {
-	const entries = ctx.sessionManager.getEntries() as CustomEntryLike[];
-	return entries.filter(
-		(e): e is CustomEntryLike & { data: EditTraceRecord } =>
-			e.type === "custom" && e.customType === TRACE_CUSTOM_TYPE && isTraceRecord(e.data),
-	);
 }
 
 export function isTraceRecord(data: unknown): data is EditTraceRecord {
@@ -113,6 +103,30 @@ export function isTraceRecord(data: unknown): data is EditTraceRecord {
 		typeof (data as EditTraceRecord).toolCallId === "string"
 	);
 }
+
+/** Read the trace log; unparsable lines are skipped. */
+export function readTraceLog(path: string): EditTraceRecord[] {
+	let text: string;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch {
+		return [];
+	}
+	const out: EditTraceRecord[] = [];
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const parsed = JSON.parse(line) as unknown;
+			if (isTraceRecord(parsed)) out.push(parsed);
+		} catch {
+			// skip corrupt lines
+		}
+	}
+	return out;
+}
+
+const MAX_DIGEST_CHARS = 60_000;
+const MAX_LINE_CHARS = 800;
 
 export function compactRecord(rec: EditTraceRecord): string {
 	const out = [
@@ -150,9 +164,10 @@ const ANALYSIS_PROMPT = (n: number): string =>
 	[
 		"Analysis task for the pi-ast-edit extension (the ast-grep powered edit tool).",
 		"",
-		`Source: the last ${n} recorded edit-tool calls of this session, most recent first.`,
-		"Each line: timestamp, outcome, backend, path, per-edit mode with the pattern/text",
-		"at stake, match/error counts, and the error message when the call failed.",
+		`Source: the last ${n} recorded edit-tool calls (when session ids are present,`,
+		"session ids are present), most recent first. Each line: timestamp, outcome,",
+		"backend, path, per-edit mode with the pattern/text at stake, match/error",
+		"counts, and the error message when the call failed.",
 		"",
 		"Task:",
 		"1. Cluster the edit-tool failures and near-misses (e.g. ambiguous patterns, invalid",
@@ -168,32 +183,37 @@ const ANALYSIS_PROMPT = (n: number): string =>
 		"Records:",
 	].join("\n");
 
+type SessionManagerLike = { getSessionId?: () => string };
+
 /**
  * `/ast-edit-insights [N|all]` — read the last N recorded edit-tool calls of
- * this session (default from `piAstEdit.insightsLines`) and hand them to the
- * session model as a user message, so the analysis lands in the transcript
- * and can be acted on. Active only; no passive triggering.
+ * this session from the trace log (default from `piAstEdit.insightsLines`)
+ * and hand them to the session model as a user message, so the analysis
+ * lands in the transcript and can be acted on. Active only; no passive
+ * triggering.
  */
 export function registerInsightsCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("ast-edit-insights", {
 		description:
-			"Analyze recorded edit-tool traces of this session with the session model; optional N (entries) or `all` argument",
+			"Analyze recorded edit-tool traces with the session model; optional N (records) or `all` argument",
 		handler: async (args, ctx) => {
-			traceConfigCache = loadTraceConfig();
+			const cfg = loadTraceConfig();
 			const arg = args.trim();
 			const limit =
 				arg === "all"
 					? Number.MAX_SAFE_INTEGER
 					: /^\d+$/.test(arg)
 						? Number(arg)
-						: traceConfigCache.insightsLines;
-			const records = traceEntries(ctx)
-				.map((e) => e.data)
+						: cfg.insightsLines;
+			const tracePath = cfg.tracePath ?? defaultTracePath();
+			const sessionId = (ctx.sessionManager as SessionManagerLike | undefined)?.getSessionId?.();
+			const records = readTraceLog(tracePath)
+				.filter((rec) => !sessionId || rec.sessionId === undefined || rec.sessionId === sessionId)
 				.slice(-limit)
 				.reverse(); // most recent first
 			if (records.length === 0) {
 				ctx.ui.notify(
-					`ast-edit-insights: no recorded edit calls in this session. Enable tracing via the piAstEdit key in ${join(getAgentDir(), "settings.json")} (traceEnabled: true) — records start with the next edit.`,
+					`ast-edit-insights: no recorded edit calls for this session in ${tracePath}. Enable tracing via the piAstEdit key in ${join(getAgentDir(), "settings.json")} (traceEnabled: true) — records start with the next edit.`,
 					"info",
 				);
 				return;
@@ -204,9 +224,7 @@ export function registerInsightsCommand(pi: ExtensionAPI): void {
 	});
 }
 
-/** Wire telemetry: remember pi for recordEditTrace and register the command. */
+/** Wire telemetry: register the insights command. */
 export function initInsights(pi: ExtensionAPI): void {
-	piRef = pi;
-	traceConfigCache = loadTraceConfig();
 	registerInsightsCommand(pi);
 }

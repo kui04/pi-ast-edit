@@ -335,9 +335,8 @@ async function performEdit(
 }
 
 /**
- * Public execute: runs the edit and records one telemetry entry per call
- * (session custom entry via pi.appendEntry). Recording never throws, so it
- * cannot break an edit.
+ * Public execute: runs the edit and appends one telemetry record per call to
+ * the trace log (recordEditTrace never throws, so it cannot break an edit).
  */
 async function execute(
 	toolCallId: string,
@@ -354,6 +353,9 @@ async function execute(
 	}));
 	const base = {
 		toolCallId,
+		sessionId: (
+			ctx.sessionManager as { getSessionId?: () => string } | undefined
+		)?.getSessionId?.(),
 		path: params.path,
 		binary,
 		edits,

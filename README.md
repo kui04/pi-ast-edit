@@ -75,12 +75,20 @@ toolchain; never `--no-verify`).
 
 ## Telemetry
 
-Optional: record every `edit` call as a per-session entry and analyze
+Optional: append one JSON line per `edit` call to a single log file
+(`~/.pi/agent/pi-ast-edit/edits.jsonl`, each with its session id) and analyze
 failures with the session model. Enable via `~/.pi/agent/settings.json`:
 
 ```jsonc
-{ "piAstEdit": { "traceEnabled": true, "insightsLines": 300 } }
+{
+  "piAstEdit": {
+    "traceEnabled": true,   // default false
+    "tracePath": "…",       // optional override; default under the agent dir
+    "insightsLines": 300
+  }
+}
 ```
 
 Then run `/ast-edit-insights` (optional count or `all`) — the model clusters
-failure patterns and proposes concrete fixes for the tool's guidelines.
+failure patterns of the current session and proposes concrete fixes for the
+tool's guidelines. Developers can also grep the log file directly.
