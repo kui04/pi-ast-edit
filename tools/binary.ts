@@ -27,9 +27,13 @@ function candidatePaths(): string[] {
 	if (process.env.PI_AST_EDIT_BIN) candidates.push(process.env.PI_AST_EDIT_BIN);
 	for (const base of [EXT_DIR, realpathSafe(EXT_DIR)]) {
 		if (!base) continue;
-		candidates.push(join(base, "target", "release", "pi-ast-edit"));
+		// Local dev builds first: debug (`cargo test`/`cargo build`), then the
+		// nix flake's `result/bin` (also a local, deliberately-built artifact),
+		// then an explicit release build — all fresher candidates than the
+		// postinstall download from a GitHub release.
 		candidates.push(join(base, "target", "debug", "pi-ast-edit"));
 		candidates.push(join(base, "result", "bin", "pi-ast-edit"));
+		candidates.push(join(base, "target", "release", "pi-ast-edit"));
 	}
 	const cached = cacheBinaryPath();
 	if (cached) candidates.push(cached);

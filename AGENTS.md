@@ -35,7 +35,8 @@ E2E (slow, real model): `cp scripts/.env.example scripts/.env`, set `PI_E2E_MODE
   re-parsed and rolled back on new syntax errors, ambiguous patterns rejected (matchIndex/all),
   undefined `$VAR` rejected.
 - Keep `ast-grep-core` and `ast-grep-language` in lockstep (0.45.3).
-- Binary resolution: `PI_AST_EDIT_BIN` → `target/{release,debug}` → `result/bin` → postinstall
-  cache. Missing: `edit` falls back to pi's builtin; `ast_find`/`ast_languages` fail fast.
+- Binary resolution: `PI_AST_EDIT_BIN` → `target/debug` → `result/bin` (nix build)
+  → `target/release` → postinstall cache — local builds first, download last.
+  Missing: `edit` falls back to pi's builtin; `ast_find`/`ast_languages` fail fast.
 - Release: tag push → `release.yml` builds 6 platform binaries; `checks.yml` runs as gate.
 - Telemetry: session entries via `pi.appendEntry` — never throw, stay compact (no file contents).
