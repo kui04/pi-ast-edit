@@ -1,120 +1,42 @@
 # pi-ast-edit
 
-A [pi](https://github.com/earendil-works/pi) extension that routes **all file
-edits through [ast-grep](https://github.com/ast-grep/ast-grep)** — AST-aware
-structural matching — for the 28 supported languages, with exact-text
-fallback for everything else.
+**[中文 (Chinese)](README.zh-CN.md)**
 
-When this extension is loaded, the built-in `edit` tool is replaced by an
-ast-grep-powered implementation, and two helper tools are added:
-`ast_find` (structural search) and `ast_languages` (supported file types).
+A [pi](https://github.com/earendil-works/pi) extension extension that routes **all file
+edits through [ast-grep](https://github.com/ast-grep/ast-grep)** — AST-aware
+structural matching for 28 languages, with exact-text fallback. It replaces
+the built-in `edit` tool and adds two helpers: `ast_find` (structural search)
+and `ast_languages` (supported file types).
 
 ## Why
 
-The built-in `edit` tool matches exact text. That fails when the model's
-memory of whitespace is slightly off, and it can match the *wrong* occurrence
-— including partial tokens (`foo` inside `foobar`) or text inside strings and
-comments. ast-grep matches **whole AST nodes**:
-
-- whitespace-insensitive: `foo(1, 2)` matches `foo(1,2)`
-- `$A` captures one node, `$$$A` captures zero or more, `$$$` matches any
-- replacements are parsed and validated; the whole file is re-parsed after
-  editing — a change that would break syntax (e.g. drop a closing bracket)
-  is **rejected without writing**
-
-## Architecture
-
-```
-pi (agent) ── edit / ast_find / ast_languages
-      │  (JSON over stdin/stdout)
-      ▼
-pi-ast-edit (Rust binary, ast-grep-core 0.45.3)
-      │
-      ▼
-tree-sitter grammars (28 languages, compiled in)
-```
-
-- `src/` — Rust binary: `edit`, `find`, `languages` commands
-- `index.ts` + `tools/` — pi extension (TypeScript, loaded via jiti)
-- `flake.nix` — nix flake with rust-overlay
-
-### Safety model
-
-1. **Replacement validation** — every replacement/insertion is parsed
-   standalone; unbalanced brackets or partial fragments are rejected with
-   the parse error.
-2. **Whole-file verification** — after all edits, the file is re-parsed;
-   if new syntax errors appear the batch is rolled back, nothing is written.
-3. **Uniqueness guard** — a pattern matching multiple nodes fails with the
-   full match list (line/col/kind/text); the agent must add `matchIndex`
-   (0-based) or `all: true`, or narrow the pattern. This prevents editing
-   the wrong occurrence.
-4. **Undefined variable check** — replacements referencing `$VAR`s the
-   pattern does not capture (or with the wrong arity) are rejected instead
-   of being silently dropped.
-5. **Exact-mode fallback** — unsupported file types (`.txt`, `.vue`,
-   `.toml`, ...) and oldText that cannot be parsed as a node fall back to
-   plain text replacement with the same uniqueness semantics as the built-in
-   edit tool.
+Exact-text matching fails when the model's memory of whitespace is off, and
+can hit the *wrong* occurrence — partial tokens or text inside strings and
+comments. ast-grep matches **whole AST nodes**: whitespace-insensitive, and
+every replacement is validated — a change that would break syntax is
+**rejected without writing**, and the whole file is re-parsed after editing
+(rolled back on new syntax errors). Ambiguous patterns are rejected with the
+full match list; add `matchIndex` or `all: true`, or narrow the pattern.
 
 ## Install
-
-From GitHub (the real flow) — the binary downloads during install:
 
 ```bash
 pi install git:github.com/kui04/pi-ast-edit
 # or try without installing: pi -e git:github.com/kui04/pi-ast-edit
 ```
 
-For local development, build the binary and load the repo directly
-(same resolution, no symlink step):
-
-```bash
-nix build  # or: nix develop -c cargo build --release
-pi -e ./index.ts
-```
-
-The binary is located automatically in this order:
-`PI_AST_EDIT_BIN` env var → `target/release/pi-ast-edit` →
-`target/debug/pi-ast-edit` → `result/bin/pi-ast-edit` →
-`~/.pi/agent/cache/pi-ast-edit/<platform>/` (postinstall cache).
-When no binary is found, the `edit` tool never blocks: it warns once, falls
-back immediately to pi's built-in exact-text editor for `oldText`/`newText`
-edits (structural ast-grep edits return an explanatory error instead), and
-starts one background re-download so a later call self-heals.
-`ast_find`/`ast_languages` fail fast with a hint (they have no fallback).
-
-### Install-time download
-
-During `pi install`, a `postinstall` script fetches the platform binary from
-the latest GitHub release into `~/.pi/agent/cache/pi-ast-edit/` (skipped when
-a local build exists). Download failures fail the install loudly.
-
-### Publishing a release
-
-The release workflow (`.github/workflows/release.yml`) builds the binary for
-linux-x64/-arm64 (musl-static: runs on any distro with no glibc version floor),
-darwin-x64/-arm64, and win32-x64 (.exe, static CRT) and attaches them to a
-GitHub release. Publish with a tag:
-
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The download source comes from the `repository` field of `package.json`
-(override with `PI_AST_EDIT_REPO=owner/repo`). Delete
-`~/.pi/agent/cache/pi-ast-edit/` to force a re-download (a missing cache is
-also re-downloaded in the background on the next tool call).
+Local development: `nix build` (or `nix develop -c cargo build --release`),
+then `pi -e ./index.ts`. The binary is located via `PI_AST_EDIT_BIN`, local
+builds, or the postinstall download cache. If it's missing, `edit` warns once,
+falls back to pi's built-in editor, and re-downloads in the background.
 
 ## Usage
-
-The `edit` tool accepts two modes per edit:
 
 ```jsonc
 // Exact mode (built-in compatible)
 { "path": "src/main.ts", "edits": [{ "oldText": "const x = 1", "newText": "const y = 2" }] }
 
-// Structural mode
+// Structural mode (pattern syntax: $A one node, $$$A zero+, $$$ any)
 { "path": "src/main.ts", "edits": [
     { "pattern": "foo($A)", "replace": "bar($A)" },
     { "pattern": "foo()", "insertAfter": "baz();" },
@@ -135,69 +57,32 @@ ast_find { "path": "src/main.ts", "position": "12:5" }
 
 ## Development
 
-```bash
-nix develop          # rust toolchain (rust-overlay) + nodejs + gcc
-nix develop -c cargo test        # unit + integration tests
-nix develop -c cargo clippy --all-targets
-npm install          # dev deps for typechecking the extension
-npx tsc --noEmit     # typecheck the extension
-nix build            # build the binary (result/bin/pi-ast-edit)
-```
-
-End-to-end tests drive real `pi` with a real model (3 journeys, several
-minutes). Config via `scripts/.env` — copy `scripts/.env.example` first.
-All `.env` entries are passed to pi, so provider API keys go there too:
+Dev environment is the nix flake — run everything through `nix develop`:
 
 ```bash
-cp scripts/.env.example scripts/.env  # then set PI_E2E_MODEL
-node scripts/test-e2e.mjs
+nix develop -c npm install   # dev deps (once)
+nix develop -c cargo test
+nix develop -c cargo clippy --all-targets -- -D warnings
+nix develop -c cargo fmt --check
+nix develop -c npx tsc --noEmit
+nix develop -c npx @biomejs/biome ci --error-on-warnings .
+nix develop -c node scripts/test-downloader.mjs
+nix build                     # binary → result/bin/pi-ast-edit
 ```
 
-Pre-commit gate (clippy, rustfmt, Biome) — install once per clone:
+E2E (slow, real model): `cp scripts/.env.example scripts/.env`, set
+`PI_E2E_MODEL`, then `nix develop -c node scripts/test-e2e.mjs`. Commit
+through the shell — `nix develop -c git commit` (hooks need its toolchain;
+never `--no-verify`).
 
-```bash
-git config core.hooksPath .githooks
-```
+## Telemetry
 
-## Edit-tool telemetry (dev-phase insights loop)
-
-Every `edit` call can be recorded as a per-session custom entry
-(`pi.appendEntry`; does not participate in LLM context, lives in the session
-file, dies with the session). Configured via the `piAstEdit` key of pi's
-global settings file (unknown keys are ignored and preserved by pi):
+Optional: record every `edit` call as a per-session entry and analyze
+failures with the session model. Enable via `~/.pi/agent/settings.json`:
 
 ```jsonc
-// ~/.pi/agent/settings.json
-{
-  "piAstEdit": {
-    "traceEnabled": true,   // default false
-    "insightsLines": 300    // entries considered per analysis run
-  }
-}
+{ "piAstEdit": { "traceEnabled": true, "insightsLines": 300 } }
 ```
 
-Each recorded call carries: mode per edit (pattern/exact with the
-truncated pattern), backend (ast-grep vs builtin fallback), path, applied /
-pre-error / post-error counts, duration, and the error message on failure.
-Recording never throws and cannot break an edit (tools/insights.ts).
-
-Analyze accumulated traces in-session with the session model:
-
-```
-/ast-edit-insights        # last insightsLines entries of this session
-/ast-edit-insights 50     # last 50
-/ast-edit-insights all    # everything
-```
-
-The command reads this session's recorded entries and hands a compact
-digest to the model as a user message; the model clusters failures
-(ambiguous patterns, invalid replacements, rolled-back edits, wrong-mode
-usage), names root causes, and proposes concrete fixes — exact wording for
-tool descriptions / guidelines, schema changes, or bug locations in src/.
-Use the findings to update `promptGuidelines` in tools/edit-tool.ts and
-AGENTS.md.
-
-For headless debugging of the Rust binary itself, the JSON-lines trace
-layer (src/main.rs) is still available via env: `PI_AST_EDIT_TRACE=/path`
-plus optional `PI_AST_EDIT_TRACE_LEVEL=debug` — one JSON line per tracing
-event (per-edit match counts, outcomes, failures).
+Then run `/ast-edit-insights` (optional count or `all`) — the model clusters
+failure patterns and proposes concrete fixes for the tool's guidelines.
