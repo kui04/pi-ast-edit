@@ -48,8 +48,6 @@ jobs:
       - name: Rust tests
         run: cargo test
       - name: TypeScript tests (node:test)
-        run: node --test tests/ts/*.test.ts
+        run: node --test tests/ts/*.test.ts tests/ts/*.test.mjs
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
-      - name: Downloader test
-        run: node scripts/test-downloader.mjs

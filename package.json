@@ -21,7 +21,7 @@
 	},
 	"scripts": {
 		"postinstall": "node scripts/postinstall.mjs",
-		"test:ts": "node --test tests/ts/*.test.ts"
+		"test:ts": "node --test tests/ts/*.test.ts tests/ts/*.test.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.13",

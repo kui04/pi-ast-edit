@@ -66,14 +66,12 @@ nix develop -c cargo clippy --all-targets -- -D warnings
 nix develop -c cargo fmt --check
 nix develop -c npx tsc --noEmit
 nix develop -c npx @biomejs/biome ci --error-on-warnings .
-nix develop -c node scripts/test-downloader.mjs
+nix develop -c npm run test:ts   # TS unit + integration + binary downloader
 nix build                     # binary → result/bin/pi-ast-edit
 ```
 
-E2E (slow, real model): `cp scripts/.env.example scripts/.env`, set
-`PI_E2E_MODEL`, then `nix develop -c node scripts/test-e2e.mjs`. Commit
-through the shell — `nix develop -c git commit` (hooks need its toolchain;
-never `--no-verify`).
+Commit through the shell — `nix develop -c git commit` (hooks need its
+toolchain; never `--no-verify`).
 
 ## Telemetry
 

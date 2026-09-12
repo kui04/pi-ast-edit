@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerEditTool } from "../../tools/edit-tool.ts";
-import { initInsights, type EditTraceRecord } from "../../tools/insights.ts";
+import { type EditTraceRecord, initInsights } from "../../tools/insights.ts";
 
 /**
  * F: execute-wrapper integration tests. Drive the real `edit` tool through
@@ -16,11 +16,21 @@ import { initInsights, type EditTraceRecord } from "../../tools/insights.ts";
  * produce.
  */
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "target", "debug", "pi-ast-edit");
+const BIN = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"..",
+	"target",
+	"debug",
+	"pi-ast-edit",
+);
 const hasBinary = existsSync(BIN);
 
 const agentDir = mkdtempSync(join(tmpdir(), "piastedit-agent-"));
-writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ piAstEdit: { traceEnabled: true } }));
+writeFileSync(
+	join(agentDir, "settings.json"),
+	JSON.stringify({ piAstEdit: { traceEnabled: true } }),
+);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_AST_EDIT_BIN = BIN;
 
@@ -33,9 +43,21 @@ const capturePi = {
 } as unknown as ExtensionAPI;
 initInsights(capturePi);
 
-const recorders: Array<{ name: string; parameters: unknown; execute: Function }> = [];
+type ToolLike = {
+	name: string;
+	parameters: unknown;
+	execute: (
+		toolCallId: string,
+		params: unknown,
+		signal: unknown,
+		onUpdate: unknown,
+		ctx: unknown,
+	) => Promise<unknown>;
+};
+
+const recorders: ToolLike[] = [];
 const toolPi = {
-	registerTool: (t: { name: string; parameters: unknown; execute: Function }) => recorders.push(t),
+	registerTool: (t: ToolLike) => recorders.push(t),
 } as unknown as ExtensionAPI;
 registerEditTool(toolPi);
 const editTool = recorders[0];
@@ -48,8 +70,18 @@ after(() => {
 	rmSync(cwd, { recursive: true, force: true });
 });
 
-async function runEdit(path: string, edits: unknown[], signal?: AbortSignal) {
-	return editTool.execute(`call-${Math.random().toString(36).slice(2)}`, { path, edits }, signal, undefined, ctx);
+async function runEdit(
+	path: string,
+	edits: unknown[],
+	signal?: AbortSignal,
+): Promise<{ content: Array<{ text: string }> }> {
+	return editTool.execute(
+		`call-${Math.random().toString(36).slice(2)}`,
+		{ path, edits },
+		signal,
+		undefined,
+		ctx,
+	) as Promise<{ content: Array<{ text: string }> }>;
 }
 
 function file(name: string, content: string): string {
@@ -60,7 +92,6 @@ function file(name: string, content: string): string {
 
 test("F1: pattern edit success records ok with applied count", { skip: !hasBinary }, async () => {
 	const path = file("a.js", "foo(1);");
-	const before = appended.length;
 	const result = await runEdit(path, [{ pattern: "foo($A)", replace: "bar($A)" }]);
 	assert.match(result.content[0].text, /Applied 1 edit/);
 	assert.equal(readFileSync(path, "utf8"), "bar(1);");
@@ -84,7 +115,10 @@ test("F2: ambiguous pattern -> error record, file unchanged", { skip: !hasBinary
 });
 
 test("F3: missing file -> error record", { skip: !hasBinary }, async () => {
-	await assert.rejects(runEdit(join(cwd, "missing.js"), [{ oldText: "x", newText: "y" }]), /Could not edit file/);
+	await assert.rejects(
+		runEdit(join(cwd, "missing.js"), [{ oldText: "x", newText: "y" }]),
+		/Could not edit file/,
+	);
 	const rec = appended[appended.length - 1];
 	assert.equal(rec.result, "error");
 	assert.match(rec.error ?? "", /Could not edit file/);
@@ -94,7 +128,11 @@ test("F4: aborted signal -> aborted record", { skip: !hasBinary }, async () => {
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(
-		runEdit(file("c.js", "foo(1);"), [{ pattern: "foo($A)", replace: "bar($A)" }], controller.signal),
+		runEdit(
+			file("c.js", "foo(1);"),
+			[{ pattern: "foo($A)", replace: "bar($A)" }],
+			controller.signal,
+		),
 		/aborted/i,
 	);
 	const rec = appended[appended.length - 1];

@@ -18,16 +18,13 @@ nix develop -c cargo clippy --all-targets -- -D warnings
 nix develop -c cargo fmt --check
 nix develop -c npx tsc --noEmit
 nix develop -c npx @biomejs/biome ci --error-on-warnings .
-nix develop -c node scripts/test-downloader.mjs
+nix develop -c npm run test:ts  # TS unit + integration + binary downloader
 nix build                           # binary → result/bin/pi-ast-edit
 ```
 
 Format before committing: `cargo fmt` / `biome check --write .` (same `nix develop -c` prefix).
 Commit through the shell — `nix develop -c git commit` — pre-commit hooks need the shell's
 toolchain; never `--no-verify`. CI checks (`checks.yml`) mirror these commands; keep in sync.
-
-E2E (slow, real model): `cp scripts/.env.example scripts/.env`, set `PI_E2E_MODEL`, then
-`nix develop -c node scripts/test-e2e.mjs`.
 
 ## Conventions
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recordEditTrace, type EditTraceRecord } from "../../tools/insights.ts";
+import { type EditTraceRecord, recordEditTrace } from "../../tools/insights.ts";
 
 /**
  * E1: recordEditTrace before any initInsights() call must no-op silently.

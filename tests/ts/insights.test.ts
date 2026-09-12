@@ -7,12 +7,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	buildDigest,
 	compactRecord,
+	type EditTraceRecord,
 	initInsights,
 	isTraceRecord,
 	loadTraceConfig,
 	recordEditTrace,
 	traceEntries,
-	type EditTraceRecord,
 } from "../../tools/insights.ts";
 
 /**
@@ -80,7 +80,11 @@ test("A3: no piAstEdit key -> defaults", () => {
 test("A4: piAstEdit not an object -> defaults", () => {
 	for (const bad of ["string", null, [1, 2]]) {
 		withAgentDir({ piAstEdit: bad });
-		assert.deepEqual(loadTraceConfig(), { traceEnabled: false, insightsLines: 300 }, `piAstEdit=${JSON.stringify(bad)}`);
+		assert.deepEqual(
+			loadTraceConfig(),
+			{ traceEnabled: false, insightsLines: 300 },
+			`piAstEdit=${JSON.stringify(bad)}`,
+		);
 	}
 });
 
@@ -119,24 +123,39 @@ test("A9: insightsLines fraction floored", () => {
 
 test("B1: matching custom entry kept", () => {
 	const rec = record();
-	const ctx = { sessionManager: { getEntries: () => [{ type: "custom", customType: "piAstEditTrace", data: rec }] } };
-	assert.deepEqual(traceEntries(ctx).map((e) => e.data), [rec]);
+	const ctx = {
+		sessionManager: {
+			getEntries: () => [{ type: "custom", customType: "piAstEditTrace", data: rec }],
+		},
+	};
+	assert.deepEqual(
+		traceEntries(ctx).map((e) => e.data),
+		[rec],
+	);
 });
 
 test("B2: other customType dropped", () => {
-	const ctx = { sessionManager: { getEntries: () => [{ type: "custom", customType: "other-ext", data: record() }] } };
+	const ctx = {
+		sessionManager: {
+			getEntries: () => [{ type: "custom", customType: "other-ext", data: record() }],
+		},
+	};
 	assert.deepEqual(traceEntries(ctx), []);
 });
 
 test("B3: custom_message entry dropped", () => {
 	const ctx = {
-		sessionManager: { getEntries: () => [{ type: "custom_message", customType: "piAstEditTrace", content: "" }] },
+		sessionManager: {
+			getEntries: () => [{ type: "custom_message", customType: "piAstEditTrace", content: "" }],
+		},
 	};
 	assert.deepEqual(traceEntries(ctx), []);
 });
 
 test("B4: missing/undefined data dropped", () => {
-	const ctx = { sessionManager: { getEntries: () => [{ type: "custom", customType: "piAstEditTrace" }] } };
+	const ctx = {
+		sessionManager: { getEntries: () => [{ type: "custom", customType: "piAstEditTrace" }] },
+	};
 	assert.deepEqual(traceEntries(ctx), []);
 });
 
@@ -149,7 +168,11 @@ test("B5: malformed data dropped", () => {
 		{},
 	];
 	for (const data of malformed) {
-		const ctx = { sessionManager: { getEntries: () => [{ type: "custom", customType: "piAstEditTrace", data }] } };
+		const ctx = {
+			sessionManager: {
+				getEntries: () => [{ type: "custom", customType: "piAstEditTrace", data }],
+			},
+		};
 		assert.deepEqual(traceEntries(ctx), [], JSON.stringify(data));
 	}
 });
@@ -181,7 +204,9 @@ test("C2: error message included with ERROR tag", () => {
 
 test("C3: aborted and fallback tags", () => {
 	assert.match(compactRecord(record({ result: "aborted" })), /ABORTED/);
-	const fallback = compactRecord(record({ binary: "builtin-fallback", result: "error", error: "no binary" }));
+	const fallback = compactRecord(
+		record({ binary: "builtin-fallback", result: "error", error: "no binary" }),
+	);
 	assert.match(fallback, /fallback/);
 	assert.match(fallback, /error: no binary/);
 });
@@ -228,7 +253,7 @@ test("D2: order preserved, newline-joined", () => {
 test("D3: budget boundary — later records skipped once 60k is exhausted", () => {
 	// One record can never overflow (C5 caps a line at 800 chars); the budget
 	// binds only across many records. 100 × ~800-char lines ≈ 80k > 60k.
-		const records = Array.from({ length: 100 }, (_, i) =>
+	const records = Array.from({ length: 100 }, (_, i) =>
 		record({ path: `r${i}.js`, error: "e".repeat(700) }),
 	);
 	const digest = buildDigest(records);
