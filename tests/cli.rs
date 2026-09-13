@@ -393,6 +393,63 @@ fn edit_empty_new_text_still_deletes_text() {
 }
 
 #[test]
+fn edit_exact_not_found_reports_the_nearest_line() {
+    // indentation off by two spaces: the error must point at the line and show
+    // both versions, so the agent does not have to re-read the file to guess
+    let req = serde_json::json!({
+        "content": "function f() {\n    let a = 1;\n}",
+        "edits": [{ "oldText": "function f() {\n  let a = 1;\n}", "newText": "x" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("could not find the exact text"), "{err}");
+    assert!(err.contains("nearest: line 2"), "{err}");
+}
+
+#[test]
+fn edit_missing_new_text_hints_at_the_delete_form() {
+    let req = serde_json::json!({
+        "content": "let a = 1;\nlet b = 2;",
+        "edits": [{ "oldText": "let a = 1;\nlet b = 2;" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("newText is required with oldText"), "{err}");
+    assert!(err.contains(r#"newText: """#), "{err}");
+}
+
+#[test]
+fn edit_context_excluding_every_match_is_reported() {
+    let req = serde_json::json!({
+        "content": "foo(1);",
+        "edits": [{
+            "pattern": "foo($A)",
+            "replace": "bar($A)",
+            "context": "function nope() { $$$ }"
+        }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("matched 1 node(s)"), "{err}");
+    assert!(err.contains("excluded them all"), "{err}");
+}
+
+#[test]
+fn edit_invalid_insert_reports_the_missing_token() {
+    let req = serde_json::json!({
+        "content": "let a = 1;",
+        "edits": [{ "pattern": "let $A = $B", "insertBefore": "function f() {" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("line 1, col 15: missing `}`"), "{err}");
+}
+
+#[test]
 fn trace_file_gets_json_lines_when_enabled() {
     // PI_AST_EDIT_TRACE enables the JSON-lines trace layer (the edit-tool
     // reflection loop); the log must carry both the info outcome and the

@@ -177,7 +177,14 @@ fn plan_pattern(
         bail!("{label}: pattern `{pattern_src}` is not valid syntax")
     }
     let ctx = build_context(spec.context.as_deref(), lang, label)?;
-    let matches: Vec<GMatch> = filter_context(find_non_nested(root, &pattern), &ctx);
+    let found = find_non_nested(root, &pattern);
+    let total = found.len();
+    let matches: Vec<GMatch> = filter_context(found, &ctx);
+    if matches.is_empty() && total > 0 {
+        bail!(
+            "{label}: pattern `{pattern_src}` matched {total} node(s), but `context` excluded them all — check the context or drop it"
+        );
+    }
     let selected = select_matches(&matches, spec, label, pattern_src, "pattern")?;
     tracing::debug!(
         label = %label,
@@ -270,11 +277,18 @@ fn plan_exact_text(content: &str, spec: &EditSpec, label: &str) -> Result<Vec<Pl
     let new_text = spec
         .new_text
         .as_deref()
-        .with_context(|| format!("{label}: newText is required with oldText"))?;
+        .with_context(|| {
+            format!(
+                "{label}: newText is required with oldText — pass `newText: \"\"` to delete the matched text"
+            )
+        })?;
     let positions: Vec<usize> = content.match_indices(old_text).map(|(i, _)| i).collect();
     if positions.is_empty() {
+        let hint = nearest_hint(content, old_text)
+            .map(|hint| format!("\n{hint}"))
+            .unwrap_or_default();
         bail!(
-            "{label}: could not find the exact text in the file. oldText must match exactly including all whitespace and newlines."
+            "{label}: could not find the exact text in the file. oldText must match exactly including all whitespace and newlines.{hint}"
         );
     }
     let selected: Vec<usize> = if let Some(idx) = spec.match_index {
@@ -334,7 +348,9 @@ fn select_matches<'r, 'a>(
     what_kind: &str,
 ) -> Result<Vec<&'a GMatch<'r>>> {
     if matches.is_empty() {
-        bail!("{label}: {what_kind} `{what}` matched nothing in the file")
+        bail!(
+            "{label}: {what_kind} `{what}` matched nothing in the file — use ast_find (kind or position mode) to see which nodes the file actually has"
+        )
     }
     if let Some(idx) = spec.match_index {
         let m = matches.get(idx).with_context(|| {
@@ -602,15 +618,37 @@ fn validate_fragment(text: &str, lang: SupportLang) -> Result<()> {
     }
     let ast = lang.ast_grep(text);
     let errors = collect_errors(&ast.root());
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        bail!(
-            "`{}` — {}",
-            truncate(text, MAX_FRAGMENT_TEXT),
-            errors[0].text
-        )
+    match errors.first() {
+        None => Ok(()),
+        Some(first) => {
+            // A missing token names the fix (`missing `}``); when tree-sitter
+            // only reports a broken span, the position at least localizes it.
+            let error = errors
+                .iter()
+                .find(|e| e.text.starts_with("missing `"))
+                .unwrap_or(first);
+            bail!(
+                "`{}` — line {}, col {}: {}",
+                truncate(text, MAX_FRAGMENT_TEXT),
+                error.line,
+                error.col,
+                error.text.replace('\n', "\\n")
+            )
+        }
     }
+}
+
+/// `line 4, col 5 (call_expression `foo(1)`)` — enough to tell two planned
+/// edits apart in an overlap error.
+fn describe_planned(planned: &PlannedEdit) -> String {
+    let applied = &planned.applied;
+    format!(
+        "line {}, col {} ({} `{}`)",
+        applied.line,
+        applied.col,
+        applied.kind,
+        truncate(&applied.matched_text, MAX_SNIPPET)
+    )
 }
 
 fn check_overlap(plan: &[PlannedEdit]) -> Result<()> {
@@ -624,7 +662,9 @@ fn check_overlap(plan: &[PlannedEdit]) -> Result<()> {
             || (b.position == a_end && a.deleted_length == 0 && b.deleted_length == 0)
         {
             bail!(
-                "edits overlap or are ambiguous (two insertions at the same position). Merge them into one edit or target disjoint regions."
+                "edits overlap or are ambiguous: {} and {} target the same region. Merge them into one edit or target disjoint regions.",
+                describe_planned(w[0]),
+                describe_planned(w[1])
             );
         }
     }
@@ -637,6 +677,79 @@ fn apply_text_edit(content: &mut String, edit: &Edit<String>) {
         edit.position..edit.position + edit.deleted_length,
         &inserted,
     );
+}
+
+/// Closest place the file diverges from `old_text`, when it was not found.
+///
+/// Whitespace and indentation are the usual culprits, so look for oldText's
+/// first non-empty line in the file and report how it differs from there.
+/// One linear scan, at most one short line of output, no fuzzy matching.
+fn nearest_hint(content: &str, old_text: &str) -> Option<String> {
+    let probe = old_text
+        .lines()
+        .find(|line| !line.trim().is_empty())?
+        .trim();
+    if probe.is_empty() {
+        return None;
+    }
+    let Some(pos) = content.find(probe) else {
+        // Not even the first line is there — does everything line up once
+        // whitespace runs are collapsed?
+        let collapsed = collapse(old_text);
+        if collapsed.is_empty() || !collapse(content).contains(&collapsed) {
+            return None;
+        }
+        return Some(
+            "nearest: oldText matches once whitespace runs are collapsed — check indentation and line breaks"
+                .to_string(),
+        );
+    };
+    let line = line_of(content, pos) + 1;
+    let old_pos = old_text.find(probe).unwrap_or(0);
+    let (file_indent, old_indent) = (indent_line(content, pos), indent_line(old_text, old_pos));
+    if file_indent != old_indent {
+        return Some(format!(
+            "nearest: line {line} — same text, different indentation (file {file_indent} space(s), oldText {old_indent})"
+        ));
+    }
+    let file_lines = content[pos..].lines().count();
+    for (i, (file, old)) in content[pos..]
+        .lines()
+        .zip(old_text[old_pos..].lines())
+        .enumerate()
+    {
+        if file != old {
+            return Some(format!(
+                "nearest: line {} — the file has `{}` where oldText has `{}`",
+                line + i,
+                truncate(file, MAX_SNIPPET),
+                truncate(old, MAX_SNIPPET)
+            ));
+        }
+    }
+    if old_text[old_pos..].lines().count() > file_lines {
+        let extra = old_text[old_pos..].lines().nth(file_lines).unwrap_or("");
+        return Some(format!(
+            "nearest: line {line} — the matching text in the file ends after {file_lines} line(s); oldText continues with `{}`",
+            truncate(extra, MAX_SNIPPET)
+        ));
+    }
+    None
+}
+
+/// Whitespace runs collapsed to single spaces.
+fn collapse(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Leading whitespace width of the line containing `pos`.
+fn indent_line(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    let start = s[..pos].rfind('\n').map_or(0, |i| i + 1);
+    s[start..pos]
+        .chars()
+        .take_while(|c: &char| c.is_whitespace())
+        .count()
 }
 
 /// Sort planned edits by position and apply them to a copy of the content in
@@ -1155,6 +1268,128 @@ mod tests {
         spec.all = true;
         let r = run_edits("foo();\nfoo();", "x.js", vec![spec]).unwrap();
         assert_eq!(r.new_content, "bar();foo();\nbar();foo();");
+    }
+
+    #[test]
+    fn exact_not_found_hint_reports_the_differing_line() {
+        let err = run_edits(
+            "function f() {\n    let a = 1;\n}",
+            "x.js",
+            vec![exact_edit("function f() {\n  let a = 1;\n}", "x")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("nearest: line 2"), "{err}");
+        assert!(err.contains("where oldText has"), "{err}");
+    }
+
+    #[test]
+    fn exact_not_found_hint_reports_indentation() {
+        let err = run_edits(
+            "    foo(1);\nbar(2);",
+            "x.js",
+            vec![exact_edit("  foo(1);\n  bar(2);", "x")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("different indentation (file 4 space(s), oldText 2)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn exact_not_found_hint_detects_collapsed_whitespace() {
+        let err = run_edits(
+            "let a = 1;\nlet b = 2;",
+            "x.js",
+            vec![exact_edit("let   a   = 1; let b = 2;", "x")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("collapsed"), "{err}");
+    }
+
+    #[test]
+    fn exact_not_found_without_a_resemblance_has_no_hint() {
+        // no hint beats a misleading one: unrelated text gets no `nearest:` line
+        let err = run_edits("let a = 1;", "x.js", vec![exact_edit("qqq", "x")])
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("nearest:"), "{err}");
+    }
+
+    #[test]
+    fn missing_new_text_hint_names_the_delete_form() {
+        let mut spec = exact_edit("let a = 1;\nlet b = 2;", "");
+        spec.new_text = None;
+        let err = run_edits("let a = 1;\nlet b = 2;", "x.js", vec![spec])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("newText is required with oldText"), "{err}");
+        assert!(err.contains(r#"newText: """#), "{err}");
+    }
+
+    #[test]
+    fn context_excluding_every_match_is_reported() {
+        let mut spec = pattern_edit("foo($A)", "bar($A)");
+        spec.context = Some("function nope() { $$$ }".into());
+        let err = run_edits("foo(1);", "x.js", vec![spec])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matched 1 node(s)"), "{err}");
+        assert!(err.contains("excluded them all"), "{err}");
+    }
+
+    #[test]
+    fn pattern_matching_nothing_points_at_ast_find() {
+        let err = run_edits("foo(1);", "x.js", vec![pattern_edit("zzz($A)", "bar($A)")])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matched nothing"), "{err}");
+        assert!(err.contains("ast_find"), "{err}");
+    }
+
+    #[test]
+    fn invalid_replacement_reports_the_error_position() {
+        let err = run_edits(
+            "let a = 1;",
+            "x.js",
+            vec![pattern_edit("let $A = $B", "let $A = ")],
+        )
+        .unwrap_err();
+        // the detail lives in the cause chain, which is what the binary prints
+        let chain = format!("{err:#}");
+        assert!(chain.contains("produces invalid code"), "{chain}");
+        assert!(chain.contains("line 1, col 1"), "{chain}");
+    }
+
+    #[test]
+    fn fragment_with_a_missing_token_names_it() {
+        let mut spec = pattern_edit("let $A = $B", "");
+        spec.replace = None;
+        spec.insert_before = Some("function f() {".into());
+        let err = run_edits("let a = 1;", "x.js", vec![spec]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("line 1, col 15: missing `}`"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn overlapping_inserts_name_both_edits() {
+        let mut first = pattern_edit("foo($A);", "");
+        first.replace = None;
+        first.insert_before = Some("a;".into());
+        let mut second = pattern_edit("foo($A)", "");
+        second.replace = None;
+        second.insert_before = Some("b;".into());
+        let err = run_edits("foo(1);", "x.js", vec![first, second])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("overlap or are ambiguous"), "{err}");
+        assert!(err.contains("expression_statement `foo(1);`"), "{err}");
+        assert!(err.contains("call_expression `foo(1)`"), "{err}");
     }
 
     #[test]
