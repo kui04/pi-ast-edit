@@ -95,6 +95,8 @@ export interface EditTraceRecord {
 	toolCallId: string;
 	/** Session id at call time, when available. */
 	sessionId?: string;
+	/** `provider/id` of the active model, e.g. `ollama-cloud/glm-5.3`, when available. */
+	model?: string;
 	/** Which backend ran the call. */
 	binary: "ast-grep" | "builtin-fallback";
 	/** Per-edit summary: mode + the pattern/text at stake (truncated). */
