@@ -9,12 +9,13 @@ import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent"
  * appended to `<agentDir>/ast-edit.log.jsonl`, so it can be grepped directly.
  *
  * Reflection (on by default): the source of truth is the session itself — the
- * failed `edit` tool results on the current branch — so no log file is needed.
- * At the end of a turn carrying new failures, one clean session-independent
- * model request reflects on them; the verdict is queued into the transcript
- * (`ast-edit.reflection`) for the next turn, telling the agent how not to
- * repeat the mistakes. Fully passive: no command triggers it, and the
- * "already reflected through" marker travels with the verdict message.
+ * failed `edit` tool results of this extension on the current branch — so no
+ * log file is needed. `reflectAfterErrors` decides *when* to reflect (3 new
+ * failures by default); the request that follows then covers every failure the
+ * last verdict did not, capped at 50 per request. The verdict is queued into
+ * the transcript (`ast-edit.reflection`) for the next turn, telling the agent
+ * how not to repeat the mistakes. Fully passive: no command triggers it, and
+ * the "already reflected through" marker travels with the verdict message.
  *
  * Config lives in the `ast-edit` key of pi's global settings file
  * (`~/.pi/agent/settings.json`); pi ignores and preserves unknown settings
@@ -27,7 +28,8 @@ import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent"
  *     "tracePath": "…",       // optional override; default `<agentDir>/ast-edit.log.jsonl`
  *     "autoReflect": false,   // optional; ON by default — reflect after turns with new failures
  *     "reflectModel": "provider/modelId", // optional; default = the session model
- *     "reflectAfterErrors": 3 // reflect once this many failures piled up
+ *     "reflectAfterErrors": 3 // trigger: reflect once this many failures piled up;
+ *                             // the request then covers all of them, capped at 50
  *   }
  * }
  * ```
@@ -43,7 +45,11 @@ export interface TraceConfig {
 	autoReflect: boolean;
 	/** `"provider/modelId"` model override for the reflection request; default the session model. */
 	reflectModel?: string;
-	/** Reflect once this many new failures have piled up (default 3). */
+	/**
+	 * Trigger threshold (default 3): once this many failures have piled up since
+	 * the last verdict, one reflection covers *all* of them (capped at 50 per
+	 * request — the threshold itself is not a batch size).
+	 */
 	reflectAfterErrors: number;
 }
 
@@ -267,9 +273,13 @@ export function failedEdits(entries: unknown): FailedEdit[] {
 
 // ---------- reflection request ----------
 
-const MAX_DIGEST_CHARS = 60_000;
 const MAX_LINE_CHARS = 800;
-/** Upper bound on failures per request, independent of the trigger threshold. */
+/**
+ * Request-size guard, not a batch size: `reflectAfterErrors` only decides *when*
+ * to reflect; the request then carries every failure the last verdict did not
+ * cover, capped here so a pile-up (e.g. while the reflection request kept
+ * failing) cannot blow up the prompt.
+ */
 const MAX_FAILURES_PER_REFLECTION = 50;
 
 /** One failure as a single log-ish line. */
@@ -280,18 +290,6 @@ export function compactFailure(failure: FailedEdit): string {
 	const line = parts.join("  ");
 	// Cap at MAX_LINE_CHARS including the ellipsis.
 	return line.length <= MAX_LINE_CHARS ? line : `${line.slice(0, MAX_LINE_CHARS - 1)}…`;
-}
-
-export function buildDigest(failures: FailedEdit[]): string {
-	const out: string[] = [];
-	let budget = MAX_DIGEST_CHARS;
-	for (const failure of failures) {
-		const line = compactFailure(failure);
-		if (out.length > 0 && budget - line.length <= 0) break;
-		out.push(line);
-		budget -= line.length;
-	}
-	return out.join("\n");
 }
 
 const REFLECTION_SYSTEM = `You are an analyzer for pi-ast-edit, an extension that performs structural code edits with ast-grep patterns and exact-text replacements.
@@ -372,7 +370,7 @@ export async function reflectOnErrors(
 	failures: FailedEdit[],
 ): Promise<ReflectResult> {
 	try {
-		const digest = buildDigest(failures);
+		const digest = failures.map(compactFailure).join("\n");
 		const msg = await registry.complete(model, {
 			systemPrompt: REFLECTION_SYSTEM,
 			messages: [{ role: "user", content: digest }],
