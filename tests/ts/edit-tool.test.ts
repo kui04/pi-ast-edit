@@ -41,6 +41,7 @@ const cwd = mkdtempSync(join(tmpdir(), "piastedit-cwd-"));
 type ToolLike = {
 	name: string;
 	parameters: unknown;
+	prepareArguments?: (args: unknown) => unknown;
 	execute: (
 		toolCallId: string,
 		params: unknown,
@@ -83,9 +84,11 @@ async function runEdit(
 	edits: unknown[],
 	signal?: AbortSignal,
 ): Promise<{ content: Array<{ text: string }> }> {
+	// Run arguments through the same shim pi applies before execute().
+	const params = editTool.prepareArguments?.({ path, edits }) ?? { path, edits };
 	return editTool.execute(
 		`call-${Math.random().toString(36).slice(2)}`,
-		{ path, edits },
+		params,
 		signal,
 		undefined,
 		ctx,
@@ -161,4 +164,64 @@ test("F5: exact oldText edit records mode exact", { skip: !hasBinary }, async ()
 	assert.ok(rec, "trace record written");
 	assert.equal(rec.result, "ok");
 	assert.equal(rec.edits[0].mode, "exact");
+});
+
+/** The full 10-key argument template some models send; overrides carry the real values. */
+function template(fields: Record<string, unknown>): Record<string, unknown> {
+	return {
+		all: false,
+		context: "",
+		delete: false,
+		insertAfter: "",
+		insertBefore: "",
+		matchIndex: null,
+		newText: "",
+		oldText: "",
+		pattern: "",
+		replace: "",
+		...fields,
+	};
+}
+
+test("F6: full-template sentinels apply as an exact edit", { skip: !hasBinary }, async () => {
+	const path = file("e.js", "const a = 1;");
+	const result = await runEdit(path, [
+		template({ oldText: "const a = 1;", newText: "const a = 2;" }),
+	]);
+	assert.match(result.content[0].text, /Applied 1 edit/);
+	assert.equal(readFileSync(path, "utf8"), "const a = 2;");
+	const rec = lastTraceRecord();
+	assert.ok(rec, "trace record written");
+	assert.equal(rec.result, "ok");
+	assert.equal(rec.edits[0].mode, "exact");
+});
+
+test("F7: empty context no longer fails exact mode", { skip: !hasBinary }, async () => {
+	const path = file("f.dart", "void main() {\n  runApp();\n}\n");
+	await runEdit(path, [template({ oldText: "runApp();", newText: "runApp(1);" })]);
+	assert.match(readFileSync(path, "utf8"), /runApp\(1\);/);
+});
+
+test("F8: template pattern edit uses the real op", { skip: !hasBinary }, async () => {
+	const path = file("g.js", "foo(1);");
+	await runEdit(path, [template({ pattern: "foo($A)", replace: "bar($A)" })]);
+	assert.equal(readFileSync(path, "utf8"), "bar(1);");
+});
+
+test("F9: empty replace alone errors, no silent delete", { skip: !hasBinary }, async () => {
+	const path = file("h.js", "foo(1);");
+	await assert.rejects(
+		runEdit(path, [template({ pattern: "foo($A)" })]),
+		/specify one of replace, insertBefore, insertAfter, or delete/,
+	);
+	assert.equal(readFileSync(path, "utf8"), "foo(1);");
+});
+
+test("F10: template with delete:true keeps exactly the delete op", {
+	skip: !hasBinary,
+}, async () => {
+	const path = file("i.js", "foo(1);");
+	const result = await runEdit(path, [template({ pattern: "foo($A);", delete: true })]);
+	assert.match(result.content[0].text, /Applied 1 edit/);
+	assert.equal(readFileSync(path, "utf8"), "");
 });

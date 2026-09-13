@@ -11,6 +11,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
+import { pruneSentinels, type SentinelRules } from "./args.ts";
 import { callBinary, findBinary, redownloadInBackground } from "./binary.ts";
 import { recordEditTrace } from "./reflect.ts";
 
@@ -97,8 +98,29 @@ interface EditBinaryResult {
 	postErrors: Array<{ line: number; col: number; text: string }>;
 }
 
+/** Optional edit fields where `""` / `false` means "not provided". */
+const EDIT_SENTINELS: SentinelRules = {
+	emptyStrings: ["oldText", "pattern", "replace", "insertBefore", "insertAfter", "context"],
+	falseBooleans: ["delete", "all"],
+};
+
 /** Compatibility shim for the built-in edit tool's accepted input shapes. */
 function prepareArguments(args: unknown): EditInput {
+	const input = normalizeEditArgs(args);
+	const edits = (input as { edits?: unknown }).edits;
+	if (!Array.isArray(edits)) return input;
+	return {
+		...input,
+		edits: edits.map((edit) =>
+			edit && typeof edit === "object"
+				? pruneSentinels(edit as Record<string, unknown>, EDIT_SENTINELS)
+				: edit,
+		),
+	} as EditInput;
+}
+
+/** Input shapes: `edits` as a JSON string, a single edit object, or legacy top-level oldText/newText. */
+function normalizeEditArgs(args: unknown): EditInput {
 	if (!args || typeof args !== "object") return args as EditInput;
 	const input = args as Record<string, unknown>;
 
