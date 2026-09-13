@@ -378,6 +378,7 @@ async function execute(
 		sessionId: (
 			ctx.sessionManager as { getSessionId?: () => string } | undefined
 		)?.getSessionId?.(),
+		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 		path: params.path,
 		binary,
 		edits,

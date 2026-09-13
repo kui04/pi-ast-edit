@@ -59,6 +59,7 @@ registerEditTool(toolPi);
 const editTool = recorders[0];
 const ctx = {
 	cwd,
+	model: { provider: "test-provider", id: "test-model" },
 	sessionManager: { getSessionId: () => "test-session" },
 } as never;
 
@@ -112,6 +113,7 @@ test("F1: pattern edit success records ok with applied count", { skip: !hasBinar
 	assert.equal(rec.applied, 1);
 	assert.equal(rec.edits[0].mode, "pattern");
 	assert.equal(rec.sessionId, "test-session");
+	assert.equal(rec.model, "test-provider/test-model");
 });
 
 test("F2: ambiguous pattern -> error record, file unchanged", { skip: !hasBinary }, async () => {
