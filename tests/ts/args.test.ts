@@ -93,12 +93,36 @@ test("H5: ast_find drops empty position/context/kind", () => {
 	});
 });
 
-test("H6: only the listed keys are pruned; null always is", () => {
+test("H6: only the listed keys are pruned; null/undefined always are", () => {
 	const out = pruneSentinels(
-		{ a: "", b: "", c: false, d: false, e: null, f: "x" },
+		{ a: "", b: "", c: false, d: false, e: null, f: "x", g: undefined },
 		{ emptyStrings: ["b"], falseBooleans: ["d"] },
 	);
 	assert.deepEqual(out, { a: "", c: false, f: "x" });
+});
+
+test("H8: edits sent as a JSON string are parsed and pruned; path survives", () => {
+	const out = editTool.prepareArguments?.({
+		path: "x.js",
+		edits: JSON.stringify([FULL_TEMPLATE]),
+	}) as { path: string; edits: Array<Record<string, unknown>> };
+	assert.equal(out.path, "x.js");
+	assert.deepEqual(out.edits, [{ oldText: "a", newText: "b" }]);
+});
+
+test("H9: a single edit object is wrapped into an array and pruned", () => {
+	const out = editTool.prepareArguments?.({ path: "x.js", edits: { ...FULL_TEMPLATE } }) as {
+		edits: Array<Record<string, unknown>>;
+	};
+	assert.deepEqual(out.edits, [{ oldText: "a", newText: "b" }]);
+});
+
+test("H10: a single edit inside a JSON string is wrapped too", () => {
+	const out = editTool.prepareArguments?.({
+		path: "x.js",
+		edits: JSON.stringify({ oldText: "a", newText: "b", pattern: "", context: "" }),
+	}) as { edits: Array<Record<string, unknown>> };
+	assert.deepEqual(out.edits, [{ oldText: "a", newText: "b" }]);
 });
 
 test("H7: pruning applies to every edit in the array", () => {
