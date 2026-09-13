@@ -199,6 +199,57 @@ fn find_context_filter() {
 }
 
 #[test]
+fn find_empty_context_and_kind_are_absent() {
+    // a model that fills every field sends `--context ""` / `--kind ""` for
+    // "unused"; an empty value is absent, so the pattern alone drives the search
+    let path = fixture(
+        "empty-ctx.js",
+        "function a() { foo(1); }\nfunction b() { foo(2); }",
+    );
+    let (code, out) = run_bin(
+        &[
+            "find",
+            "--path",
+            path.to_str().unwrap(),
+            "--pattern",
+            "foo($A)",
+            "--context",
+            "",
+            "--kind",
+            "",
+        ],
+        "",
+    );
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 0);
+    assert_eq!(out["matches"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn find_empty_position_and_limit_are_absent() {
+    // `--position ""` is "unused", not a position, and `--limit ""` leaves the
+    // default cap in place instead of failing the integer parse
+    let path = fixture("empty-pos.js", "let a = 1;\nlet b = 2;");
+    let (code, out) = run_bin(
+        &[
+            "find",
+            "--path",
+            path.to_str().unwrap(),
+            "--pattern",
+            "let $A = $B",
+            "--position",
+            "",
+            "--limit",
+            "",
+        ],
+        "",
+    );
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 0);
+    assert_eq!(out["matches"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn find_reports_syntax_errors() {
     let path = fixture("broken.js", "let = ;");
     let (code, out) = run_bin(
@@ -282,6 +333,63 @@ fn edit_preserves_missing_trailing_newline() {
     assert_eq!(code, 0);
     assert_eq!(out["newContent"], "bar();");
     assert!(!out["newContent"].as_str().unwrap().ends_with('\n'));
+}
+
+#[test]
+fn edit_empty_pattern_and_context_fall_back_to_exact() {
+    // pattern "" is "unused", so the oldText/newText pair drives the edit, and
+    // the empty context is ignored instead of failing the whole request
+    let req = serde_json::json!({
+        "content": "foo(1);",
+        "edits": [{
+            "pattern": "",
+            "context": "",
+            "oldText": "foo(1);",
+            "newText": "bar(1);"
+        }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 0);
+    assert_eq!(out["newContent"], "bar(1);");
+}
+
+#[test]
+fn edit_empty_insert_before_is_not_an_operation() {
+    // an empty insertion used to count as a second operation and fail the
+    // "specify only one of" guard
+    let req = serde_json::json!({
+        "content": "foo(1);",
+        "edits": [{ "pattern": "foo(1);", "replace": "bar(1);", "insertBefore": "" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 0);
+    assert_eq!(out["newContent"], "bar(1);");
+}
+
+#[test]
+fn edit_empty_replace_still_replaces_with_nothing() {
+    // "" in replace is an instruction (delete the matched text), not a sentinel
+    let req = serde_json::json!({
+        "content": "foo(1);",
+        "edits": [{ "pattern": "foo(1);", "replace": "" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 0);
+    assert_eq!(out["newContent"], "");
+}
+
+#[test]
+fn edit_empty_new_text_still_deletes_text() {
+    // "" in newText means "replace with nothing". A two-statement oldText
+    // cannot be matched structurally, so this goes through the plain-text
+    // exact path, which requires newText to be present at all.
+    let req = serde_json::json!({
+        "content": "let a = 1;\nlet b = 2;",
+        "edits": [{ "oldText": "let a = 1;\nlet b = 2;", "newText": "" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 0);
+    assert_eq!(out["newContent"], "");
 }
 
 #[test]

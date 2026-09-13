@@ -29,11 +29,17 @@ pub fn get_arg(args: &[String], name: &str) -> Result<String> {
     bail!("missing required option {name}");
 }
 
+/// Read an optional flag's value; an empty value counts as absent.
+///
+/// A model that fills every field of its argument template sends `--context ""`
+/// for "unused". None of the flags read through here has a meaningful empty
+/// value: a `""` pattern, kind, position or limit is noise, not an
+/// instruction. A flag where `""` does mean something needs its own accessor.
 pub fn get_opt(args: &[String], name: &str) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == name {
-            return it.next().cloned();
+            return it.next().cloned().filter(|v| !v.is_empty());
         }
     }
     None
