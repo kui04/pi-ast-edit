@@ -180,12 +180,9 @@ console.log("missing-binary ok");
 	const home6 = mkdtempSync(join(tmpdir(), "pi-ag-dl6-"));
 	const ext6 = mkdtempSync(join(tmpdir(), "pi-ag-ext6-"));
 	const work6 = mkdtempSync(join(tmpdir(), "pi-ag-work6-"));
-	mkdirSync(join(ext6, "tools"), { recursive: true });
 	mkdirSync(join(ext6, "scripts"), { recursive: true });
 	symlinkSync(join(repo, "node_modules"), join(ext6, "node_modules"), "dir");
-	cpSync(join(repo, "tools", "edit-tool.ts"), join(ext6, "tools", "edit-tool.ts"));
-	cpSync(join(repo, "tools", "binary.ts"), join(ext6, "tools", "binary.ts"));
-	cpSync(join(repo, "tools", "reflect.ts"), join(ext6, "tools", "reflect.ts"));
+	cpSync(join(repo, "tools"), join(ext6, "tools"), { recursive: true });
 	cpSync(join(repo, "scripts", "provision.mjs"), join(ext6, "scripts", "provision.mjs"));
 	writeFileSync(
 		join(ext6, "package.json"),

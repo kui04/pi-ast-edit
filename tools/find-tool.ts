@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
+import { pruneSentinels, type SentinelRules } from "./args.ts";
 import { callBinary } from "./binary.ts";
 
 const findSchema = Type.Object({
@@ -80,14 +81,7 @@ function formatResult(result: FindBinaryResult, path: string, position?: string)
 
 async function execute(
 	_toolCallId: string,
-	params: {
-		path: string;
-		pattern?: string;
-		context?: string;
-		kind?: string;
-		position?: string;
-		limit?: number;
-	},
+	params: FindInput,
 	_signal: AbortSignal | undefined,
 	_onUpdate: unknown,
 	ctx: ExtensionContext,
@@ -110,6 +104,20 @@ async function execute(
 	};
 }
 
+/** Schema-derived tool input, shared by `prepareArguments` and `execute`. */
+type FindInput = Static<typeof findSchema>;
+
+/** Optional ast_find fields where `""` means "not provided". */
+const FIND_SENTINELS: SentinelRules = {
+	emptyStrings: ["pattern", "context", "kind", "position"],
+};
+
+/** Drop the empty sentinels models send for unused options (see tools/args.ts). */
+function prepareArguments(args: unknown): FindInput {
+	if (!args || typeof args !== "object") return args as FindInput;
+	return pruneSentinels(args as Record<string, unknown>, FIND_SENTINELS) as FindInput;
+}
+
 export function registerFindTool(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "ast_find",
@@ -129,6 +137,7 @@ export function registerFindTool(pi: ExtensionAPI) {
 			"Use ast_find with position to discover the AST node kind at a location (and its ancestors) when writing kind patterns or debugging a pattern that matches nothing.",
 		],
 		parameters: findSchema,
+		prepareArguments,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		execute,
 	});
