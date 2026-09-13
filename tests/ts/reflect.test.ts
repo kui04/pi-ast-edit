@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	compactFailure,
@@ -16,6 +16,7 @@ import {
 	REFLECTION_MESSAGE_TYPE,
 	recordEditTrace,
 	reflectOnErrors,
+	resetReflectionState,
 	resolveReflectModel,
 } from "../../tools/reflect.ts";
 
@@ -47,6 +48,10 @@ afterEach(() => {
 	for (const dir of dirsToClean) rmSync(dir, { recursive: true, force: true });
 	dirsToClean.length = 0;
 });
+
+// `maybeReflect` keeps the queued-verdict marker in module state; a fresh
+// process per test keeps the cases independent.
+beforeEach(() => resetReflectionState());
 
 function record(overrides: Partial<EditTraceRecord> = {}): EditTraceRecord {
 	return {
@@ -575,6 +580,92 @@ test("F5: reflectModel override is used when it resolves", async () => {
 	);
 	assert.equal(calls.length, 1);
 	assert.deepEqual(used, [{ provider: "openrouter", id: "nvidia/x:free", tag: "configured" }]);
+});
+
+test("F6: a second turn_end of the same run does not reflect again", async () => {
+	withAgentDir({});
+	const { registry, calls } = fakeRegistry("use matchIndex");
+	const { pi, sent } = autoPi();
+	const branch = [
+		...failedEdit("f6a", "2026-01-01T00:00:01.000Z"),
+		...failedEdit("f6b", "2026-01-01T00:00:02.000Z"),
+		...failedEdit("f6c", "2026-01-01T00:00:03.000Z"),
+	];
+
+	// deliverAs: "nextTurn" keeps the verdict off the branch, so this is the
+	// state the next turn_end of the same run sees.
+	await maybeReflect(pi, autoCtx(registry, branch));
+	assert.equal(calls.length, 1);
+	assert.equal(sent.length, 1);
+
+	await maybeReflect(pi, autoCtx(registry, branch));
+	assert.equal(calls.length, 1, "same batch reflected once");
+	assert.equal(sent.length, 1);
+});
+
+test("F7: the queued verdict landing on the branch changes nothing", async () => {
+	withAgentDir({});
+	const { registry, calls } = fakeRegistry();
+	const { pi, sent } = autoPi();
+	const branch = [
+		...failedEdit("f7a", "2026-01-01T00:00:01.000Z"),
+		...failedEdit("f7b", "2026-01-01T00:00:02.000Z"),
+		...failedEdit("f7c", "2026-01-01T00:00:03.000Z"),
+	];
+
+	await maybeReflect(pi, autoCtx(registry, branch));
+	await maybeReflect(pi, autoCtx(registry, [...branch, verdict("2026-01-01T00:00:03.000Z")]));
+	assert.equal(calls.length, 1);
+	assert.equal(sent.length, 1);
+});
+
+test("F8: new failures after a queued verdict reflect again, alone", async () => {
+	withAgentDir({});
+	const { registry, calls } = fakeRegistry("rules");
+	const { pi, sent } = autoPi();
+	const first = [
+		...failedEdit("f8a", "2026-01-01T00:00:01.000Z", "src/a.js"),
+		...failedEdit("f8b", "2026-01-01T00:00:02.000Z", "src/b.js"),
+		...failedEdit("f8c", "2026-01-01T00:00:03.000Z", "src/c.js"),
+	];
+	await maybeReflect(pi, autoCtx(registry, first));
+	assert.equal(calls.length, 1);
+
+	const next = [
+		...failedEdit("f8d", "2026-01-01T00:00:04.000Z", "src/d.js"),
+		...failedEdit("f8e", "2026-01-01T00:00:05.000Z", "src/e.js"),
+		...failedEdit("f8f", "2026-01-01T00:00:06.000Z", "src/f.js"),
+	];
+	await maybeReflect(pi, autoCtx(registry, [...first, ...next]));
+	assert.equal(calls.length, 2);
+	assert.match(calls[1].messages[0].content, /src\/d\.js/);
+	assert.doesNotMatch(calls[1].messages[0].content, /src\/a\.js/);
+	assert.deepEqual(sent[1].details, { coveredTs: "2026-01-01T00:00:06.000Z" });
+});
+
+test("F9: a failed reflection does not advance the queued marker", async () => {
+	withAgentDir({});
+	const failing = {
+		complete: async () => {
+			throw new Error("429 rate limited");
+		},
+	} as unknown as ModelRegistryLike;
+	const { pi, sent } = autoPi();
+	const branch = [
+		...failedEdit("f9a", "2026-01-01T00:00:01.000Z"),
+		...failedEdit("f9b", "2026-01-01T00:00:02.000Z"),
+		...failedEdit("f9c", "2026-01-01T00:00:03.000Z"),
+	];
+
+	await maybeReflect(pi, autoCtx(failing, branch));
+	assert.equal(sent.length, 0, "no verdict on failure");
+
+	// the batch is still pending: a working model reflects it once
+	const { registry, calls } = fakeRegistry("retry rules");
+	await maybeReflect(pi, autoCtx(registry, branch));
+	assert.equal(calls.length, 1);
+	assert.equal(sent.length, 1);
+	assert.deepEqual(sent[0].details, { coveredTs: "2026-01-01T00:00:03.000Z" });
 });
 
 // --- G. resolveReflectModel -------------------------------------------------
