@@ -293,18 +293,56 @@ test("C1: only failed edit results are collected", () => {
 	assert.match(failures[0].error, /matched 2 nodes/);
 });
 
-test("C2: path/edits come from the matching tool call; missing call degrades", () => {
+test("C2: path/edits come from the matching call; unmatched calls are skipped", () => {
 	const entries = [
 		editCall("c2", "lib/y.ts", [{ oldText: "a", newText: "b" }, { pattern: "q($A)" }]),
 		toolResult("c2", "edit", true, "boom"),
 		toolResult("orphan", "edit", true, "no call for me"),
 	];
 	const failures = failedEdits(entries);
-	assert.equal(failures.length, 2);
+	assert.equal(failures.length, 1, "a call we cannot match is not provably ours");
 	assert.equal(failures[0].path, "lib/y.ts");
 	assert.equal(failures[0].edits, "exact:`a`  pattern:`q($A)`");
-	assert.equal(failures[1].path, "(unknown path)");
-	assert.equal(failures[1].edits, "");
+});
+
+test("C5: another extension's `edit` failures are ignored", () => {
+	const entries = [
+		editCall("h1", "src/x.js", [{ op: "replace", pos: "1#AB", lines: ["x"] }]),
+		toolResult("h1", "edit", true, "[E_STALE_ANCHOR] 1 stale anchor: 1#AB."),
+	];
+	assert.deepEqual(failedEdits(entries), []);
+});
+
+test("C6: mixed branch keeps ours (JSON-string edits too) and drops theirs", () => {
+	const entries = [
+		editCall("h2", "src/x.js", [{ op: "replace", pos: "2#CD", lines: ["y"] }]),
+		toolResult("h2", "edit", true, '[E_BAD_REF] Invalid line reference "…".'),
+		editCall("o1", "src/z.js", [{ oldText: "a", newText: "b" }]),
+		toolResult("o1", "edit", true, "edits[0]: could not find the exact text in the file"),
+		{
+			type: "message",
+			id: "a_o2",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "o2",
+						name: "edit",
+						arguments: { path: "src/s.js", edits: '[{"pattern":"p($A)","replace":"q($A)"}]' },
+					},
+				],
+			},
+		},
+		toolResult("o2", "edit", true, "edits[0]: pattern `p($A)` matched nothing in the file"),
+	];
+	const failures = failedEdits(entries);
+	assert.deepEqual(
+		failures.map((failure) => failure.path),
+		["src/z.js", "src/s.js"],
+	);
+	assert.ok(!failures.some((failure) => failure.error.includes("E_BAD_REF")));
 });
 
 test("C3: non-array / empty input -> no failures", () => {
@@ -666,6 +704,34 @@ test("F9: a failed reflection does not advance the queued marker", async () => {
 	assert.equal(calls.length, 1);
 	assert.equal(sent.length, 1);
 	assert.deepEqual(sent[0].details, { coveredTs: "2026-01-01T00:00:03.000Z" });
+});
+
+test("F10: reflection ignores another extension's edit failures", async () => {
+	withAgentDir({}); // threshold 3
+	const { registry, calls } = fakeRegistry("rules");
+	const { pi, sent } = autoPi();
+	const foreign = [
+		editCall("h3a", "src/x.js", [{ op: "replace", pos: "3#EF", lines: ["z"] }]),
+		toolResult("h3a", "edit", true, "[E_STALE_ANCHOR] 1 stale anchor: 3#EF."),
+		editCall("h3b", "src/x.js", [{ lines: ["z"], op: "replace", pos: "4#GH" }]),
+		toolResult("h3b", "edit", true, "[E_STALE_ANCHOR] 1 stale anchor: 4#GH."),
+		editCall("h3c", "src/x.js", [{ lines: ["z"], op: "replace", pos: "5#IJ" }]),
+		toolResult("h3c", "edit", true, "[E_STALE_ANCHOR] 1 stale anchor: 5#IJ."),
+	];
+
+	await maybeReflect(pi, autoCtx(registry, foreign));
+	assert.equal(calls.length, 0, "foreign failures are not a batch");
+	assert.equal(sent.length, 0);
+
+	const ours = [
+		...failedEdit("f10a", "2026-01-01T00:00:01.000Z", "src/a.js"),
+		...failedEdit("f10b", "2026-01-01T00:00:02.000Z", "src/b.js"),
+		...failedEdit("f10c", "2026-01-01T00:00:03.000Z", "src/c.js"),
+	];
+	await maybeReflect(pi, autoCtx(registry, [...foreign, ...ours]));
+	assert.equal(calls.length, 1);
+	assert.match(calls[0].messages[0].content, /src\/a\.js/);
+	assert.doesNotMatch(calls[0].messages[0].content, /E_STALE_ANCHOR/);
 });
 
 // --- G. resolveReflectModel -------------------------------------------------
