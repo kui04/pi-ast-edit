@@ -390,6 +390,28 @@ function coveredTs(ctx: { sessionManager?: SessionReader }): string | undefined 
 let reflectionInFlight = false;
 /** Last failure notice shown, so a permanently broken model is reported once. */
 let lastFailureNotice: string | undefined;
+/**
+ * Newest failure ts already covered by a verdict this process has *queued*.
+ * `deliverAs: "nextTurn"` keeps the verdict off the branch until the next user
+ * prompt, so `coveredTs()` cannot see it: without this, every further
+ * `turn_end` of the same run finds those failures "uncovered" and reflects the
+ * same batch again.
+ */
+let reflectedTs: string | undefined;
+
+/** Later of two failure timestamps (`undefined`-tolerant; pi's format sorts as text). */
+function laterTs(a: string | undefined, b: string | undefined): string | undefined {
+	if (a === undefined) return b;
+	if (b === undefined) return a;
+	return a > b ? a : b;
+}
+
+/** Clear the module-level reflection state (tests; also fine after a session switch). */
+export function resetReflectionState(): void {
+	reflectionInFlight = false;
+	lastFailureNotice = undefined;
+	reflectedTs = undefined;
+}
 
 /**
  * Passive reflection entrypoint, wired to `turn_end`. Looks for failed `edit`
@@ -415,7 +437,7 @@ export async function maybeReflect(
 	const model = resolveReflectModel(registry, ctx.model, cfg.reflectModel);
 	const ui = ctx.ui;
 	if (!model || !registry) return; // no model to reflect with
-	const since = coveredTs(ctx);
+	const since = laterTs(coveredTs(ctx), reflectedTs);
 	const fresh = failedEdits(ctx.sessionManager?.getBranch?.()).filter(
 		(failure) => since === undefined || failure.ts > since,
 	);
@@ -429,11 +451,13 @@ export async function maybeReflect(
 			lastFailureNotice = undefined;
 			// The verdict carries the marker; deliverAs nextTurn queues it as context
 			// for the next user prompt instead of starting a turn (sendUserMessage
-			// throws while the agent is busy).
-			pi.sendMessage(
-				reflectionMessage(`${REFLECTION_HEADER}${result.text}`, fresh[fresh.length - 1].ts),
-				{ deliverAs: "nextTurn" },
-			);
+			// throws while the agent is busy). The same marker is kept locally, so the
+			// rest of this run does not reflect the same failures again.
+			const covered = fresh[fresh.length - 1].ts;
+			pi.sendMessage(reflectionMessage(`${REFLECTION_HEADER}${result.text}`, covered), {
+				deliverAs: "nextTurn",
+			});
+			reflectedTs = covered;
 		} else if (ui && result.error !== lastFailureNotice) {
 			// No marker is written on failure: the same failures are retried on the
 			// next turn (the model may be temporarily rate-limited), and only the
