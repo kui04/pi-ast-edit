@@ -209,6 +209,9 @@ function editSpecs(arguments_: unknown): Array<Record<string, unknown>> {
 			return [];
 		}
 	}
+	// Mirror the tool's own shim (edit-tool.ts `normalizeEditArgs`): one edit
+	// object is accepted as well as an array of them.
+	if (typeof value === "object" && value !== null && !Array.isArray(value)) value = [value];
 	if (!Array.isArray(value)) return [];
 	return value.filter(
 		(spec): spec is Record<string, unknown> => typeof spec === "object" && spec !== null,

@@ -73,7 +73,7 @@ function record(overrides: Partial<EditTraceRecord> = {}): EditTraceRecord {
 // --- branch fixtures --------------------------------------------------------
 
 /** Assistant message carrying one `edit` tool call. */
-function editCall(id: string, path: string, edits: unknown[]) {
+function editCall(id: string, path: string, edits: unknown) {
 	return {
 		type: "message",
 		id: `a_${id}`,
@@ -343,6 +343,45 @@ test("C6: mixed branch keeps ours (JSON-string edits too) and drops theirs", () 
 		["src/z.js", "src/s.js"],
 	);
 	assert.ok(!failures.some((failure) => failure.error.includes("E_BAD_REF")));
+});
+
+test("C7: the legacy top-level oldText/newText shape is ours", () => {
+	const entries = [
+		{
+			type: "message",
+			id: "a_c7",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "c7",
+						name: "edit",
+						arguments: { path: "src/l.js", oldText: "a", newText: "b" },
+					},
+				],
+			},
+		},
+		toolResult("c7", "edit", true, "edits[0]: could not find the exact text"),
+	];
+	const failures = failedEdits(entries);
+	assert.equal(failures.length, 1);
+	assert.equal(failures[0].path, "src/l.js");
+	assert.equal(failures[0].edits, "");
+});
+
+test("C8: a single edit object (direct or inside a JSON string) is ours", () => {
+	const entries = [
+		editCall("s1", "src/s1.js", { oldText: "a", newText: "b" }),
+		toolResult("s1", "edit", true, "edits[0]: could not find the exact text"),
+		editCall("s2", "src/s2.js", '{"pattern":"p($A)","replace":"q($A)"}'),
+		toolResult("s2", "edit", true, "edits[0]: pattern `p($A)` matched nothing"),
+	];
+	assert.deepEqual(
+		failedEdits(entries).map((failure) => failure.path),
+		["src/s1.js", "src/s2.js"],
+	);
 });
 
 test("C3: non-array / empty input -> no failures", () => {
@@ -732,6 +771,26 @@ test("F10: reflection ignores another extension's edit failures", async () => {
 	assert.equal(calls.length, 1);
 	assert.match(calls[0].messages[0].content, /src\/a\.js/);
 	assert.doesNotMatch(calls[0].messages[0].content, /E_STALE_ANCHOR/);
+});
+
+test("F11: a pile-up is capped at the 50 newest failures", async () => {
+	withAgentDir({});
+	const { registry, calls } = fakeRegistry("rules");
+	const { pi, sent } = autoPi();
+	// 60 failures, one per minute: the newest 50 are f10..f59
+	const branch = Array.from({ length: 60 }, (_, i) => {
+		const stamp = `2026-01-01T00:${String(i).padStart(2, "0")}:00.000Z`;
+		return failedEdit(`p${i}`, stamp, `src/f${i}.js`);
+	}).flat();
+
+	await maybeReflect(pi, autoCtx(registry, branch));
+	assert.equal(calls.length, 1);
+	const digest = calls[0].messages[0].content;
+	assert.equal(digest.split("\n").length, 50);
+	assert.doesNotMatch(digest, /src\/f0\.js/); // oldest dropped
+	assert.match(digest, /src\/f10\.js/);
+	assert.match(digest, /src\/f59\.js/);
+	assert.deepEqual(sent[0].details, { coveredTs: "2026-01-01T00:59:00.000Z" });
 });
 
 // --- G. resolveReflectModel -------------------------------------------------
