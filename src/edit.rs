@@ -29,13 +29,36 @@ impl Replacer<Doc> for LiteralReplacer<'_> {
     }
 }
 
+/// Empty-string option sentinels mean "unused", not "empty".
+///
+/// A model that fills every field of its argument template sends `""` for the
+/// fields it is not using; `pruneSentinels` in the extension (tools/args.ts)
+/// does the same before the request gets here. `replace`, `oldText` and
+/// `newText` are deliberately left alone: there an empty string is an
+/// instruction (replace with nothing, delete the text), not a placeholder.
+fn prune_sentinels(req: &mut EditRequest) {
+    for spec in &mut req.edits {
+        for slot in [
+            &mut spec.pattern,
+            &mut spec.context,
+            &mut spec.insert_before,
+            &mut spec.insert_after,
+        ] {
+            if slot.as_deref().is_some_and(str::is_empty) {
+                *slot = None;
+            }
+        }
+    }
+}
+
 pub fn run(args: &[String]) -> Result<Value> {
     let path = get_arg(args, "--path")?;
     let mut buf = String::new();
     std::io::stdin()
         .read_to_string(&mut buf)
         .context("failed to read request from stdin")?;
-    let req: EditRequest = serde_json::from_str(&buf).context("invalid edit request")?;
+    let mut req: EditRequest = serde_json::from_str(&buf).context("invalid edit request")?;
+    prune_sentinels(&mut req);
     if req.edits.is_empty() {
         bail!("edits must contain at least one edit");
     }
@@ -675,6 +698,40 @@ mod tests {
             match_index: None,
             all: false,
         }
+    }
+
+    #[test]
+    fn prune_sentinels_keeps_meaningful_empty_strings() {
+        // the full template a model sends: every field present, unused ones ""
+        let mut req = EditRequest {
+            content: String::new(),
+            edits: vec![EditSpec {
+                pattern: Some(String::new()),
+                replace: Some(String::new()),
+                insert_before: Some(String::new()),
+                insert_after: Some(String::new()),
+                delete: false,
+                context: Some(String::new()),
+                old_text: Some("foo(1);".into()),
+                new_text: Some(String::new()),
+                match_index: Some(0),
+                all: false,
+            }],
+        };
+
+        prune_sentinels(&mut req);
+
+        let spec = &req.edits[0];
+        // "" is a placeholder for these: they count as absent
+        assert_eq!(spec.pattern, None);
+        assert_eq!(spec.context, None);
+        assert_eq!(spec.insert_before, None);
+        assert_eq!(spec.insert_after, None);
+        // "" is an instruction here: replace with nothing / delete the text
+        assert_eq!(spec.replace.as_deref(), Some(""));
+        assert_eq!(spec.new_text.as_deref(), Some(""));
+        assert_eq!(spec.old_text.as_deref(), Some("foo(1);"));
+        assert_eq!(spec.match_index, Some(0));
     }
 
     #[test]
