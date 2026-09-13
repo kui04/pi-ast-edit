@@ -187,6 +187,42 @@ function describeEditSpec(raw: unknown): string {
 	return `${isPattern ? "pattern" : "exact"}${shown}`;
 }
 
+/** Keys another `edit` implementation (pi-hashline-edit) uses; our schema has none of them. */
+const FOREIGN_EDIT_KEYS = ["op", "pos", "lines", "end", "span"];
+
+/** `edits` specs, tolerating the JSON-string form some models send instead of an array. */
+function editSpecs(arguments_: unknown): Array<Record<string, unknown>> {
+	const raw = (arguments_ as { edits?: unknown } | undefined)?.edits;
+	let value: unknown = raw;
+	if (typeof raw === "string") {
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			return [];
+		}
+	}
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(spec): spec is Record<string, unknown> => typeof spec === "object" && spec !== null,
+	);
+}
+
+/**
+ * Whether an `edit` tool call belongs to this extension. More than one
+ * extension can register a tool named "edit" (pi-hashline-edit does) and all of
+ * their failures land on the same branch, so reflect only on calls whose
+ * arguments match this tool's schema.
+ */
+function isOurEditCall(arguments_: unknown): boolean {
+	const args = (arguments_ ?? {}) as Record<string, unknown>;
+	const specs = editSpecs(args);
+	const legacy = typeof args.oldText === "string" && typeof args.newText === "string";
+	if (!legacy && !specs.some((s) => "oldText" in s || "pattern" in s || "newText" in s)) {
+		return false;
+	}
+	return !specs.some((s) => FOREIGN_EDIT_KEYS.some((key) => key in s));
+}
+
 /** `path` + `edits` of each `edit` tool call on the branch, by tool call id. */
 function editCallArgs(entries: EntryLike[]): Map<string, { path: string; edits: string }> {
 	const out = new Map<string, { path: string; edits: string }>();
@@ -196,6 +232,7 @@ function editCallArgs(entries: EntryLike[]): Map<string, { path: string; edits: 
 		for (const raw of entry.message.content) {
 			const call = raw as { type?: string; id?: string; name?: string; arguments?: unknown };
 			if (call.type !== "toolCall" || call.name !== "edit" || typeof call.id !== "string") continue;
+			if (!isOurEditCall(call.arguments)) continue;
 			out.set(call.id, describeEditCall(call.arguments));
 		}
 	}
@@ -213,11 +250,15 @@ export function failedEdits(entries: unknown): FailedEdit[] {
 		if (message.toolName !== "edit" || message.isError !== true) continue;
 		if (typeof entry.id !== "string" || typeof entry.timestamp !== "string") continue;
 		const call = typeof message.toolCallId === "string" ? calls.get(message.toolCallId) : undefined;
+		// Not one of ours: another tool named "edit", or a call whose entry was
+		// compacted away and therefore cannot be proven ours. Neither belongs in
+		// the reflection input.
+		if (!call) continue;
 		out.push({
 			entryId: entry.id,
 			ts: entry.timestamp,
-			path: call?.path ?? "(unknown path)",
-			edits: call?.edits ?? "",
+			path: call.path,
+			edits: call.edits,
 			error: truncate(contentText(message.content), 500),
 		});
 	}
