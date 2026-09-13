@@ -1,6 +1,6 @@
 {
 	"name": "pi-ast-edit",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"private": true,
 	"type": "module",
 	"description": "pi extension: ast-grep powered code editing",
