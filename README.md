@@ -76,14 +76,17 @@ toolchain; never `--no-verify`).
 ## Telemetry & reflection
 
 **Reflection** is on by default and needs no log: the failed `edit` tool
-results on the current session branch are its input. Once `reflectAfterErrors`
-new failures (3 by default) have piled up since the last verdict, the end of a
-turn triggers one clean session-independent model request (no conversation,
-tools, or prompts — only the failure lines); the verdict is posted into the
-transcript as a custom message (`ast-edit.reflection`), queued for the next
-turn — no extra agent turn is started, and the same failures are not reflected
-on twice (the marker travels with the verdict). Everything is derived from the
-session itself, so restarts and compaction do not disturb it.
+results of this extension on the current session branch are its input.
+`reflectAfterErrors` (3 by default) is a trigger, not a batch size: once that
+many failures have piled up since the last verdict, the end of a turn triggers
+one clean session-independent model request (no conversation, tools, or prompts
+— only the failure lines), and that request covers *every* un-reflected
+failure, capped at 50 per request. The verdict is posted into the transcript as
+a custom message (`ast-edit.reflection`), queued for the next turn — no extra
+agent turn is started, and the same failures are not reflected on twice (the
+marker travels with the verdict, and the rest of the same run sees it too).
+Everything is derived from the session itself, so restarts and compaction do
+not disturb it.
 
 **Telemetry** is a developer log, off by default: with `traceEnabled` set,
 every `edit` call appends one JSON line to `~/.pi/agent/ast-edit.log.jsonl` for
@@ -98,7 +101,8 @@ Both are configured via `~/.pi/agent/settings.json`:
     "tracePath": "…",      // optional override; default `~/.pi/agent/ast-edit.log.jsonl`
     "autoReflect": false,  // optional; ON by default — reflect after turns with new failures
     "reflectModel": "provider/modelId", // optional; default = the session model
-    "reflectAfterErrors": 5 // optional; reflect once this many new failures piled up (default 3)
+    "reflectAfterErrors": 5 // optional; trigger: reflect once this many new failures piled up,
+                            // then cover all un-reflected ones (default 3)
   }
 }
 ```
