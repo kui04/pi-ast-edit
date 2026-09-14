@@ -23,6 +23,9 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
+        # Single source of truth for the package version; the mirrors to keep in
+        # sync are Cargo.lock, package.json and package-lock.json.
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" ];
         };
@@ -40,15 +43,13 @@
         # Dynamic glibc build (dev / local use).
         piAstEdit = pkgs.rustPlatform.buildRustPackage {
           pname = "pi-ast-edit";
-          version = "0.1.0";
-          inherit src;
+          inherit version src;
           cargoLock.lockFile = ./Cargo.lock;
         };
         # Fully static musl build (release binaries for Linux).
         piAstEditStatic = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
           pname = "pi-ast-edit";
-          version = "0.1.0";
-          inherit src;
+          inherit version src;
           cargoLock.lockFile = ./Cargo.lock;
         };
         # Pre-commit hooks via nix. Installed into the dev shell (shellHook);
