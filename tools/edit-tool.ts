@@ -169,7 +169,6 @@ function formatEditResult(
 	path: string,
 	applied: EditBinaryResult["applied"],
 	preErrors: EditBinaryResult["preErrors"],
-	postErrors: EditBinaryResult["postErrors"],
 ): string {
 	const lines: string[] = [`Applied ${applied.length} edit(s) to ${path}:`];
 	applied.forEach((a, i) => {
@@ -189,11 +188,6 @@ function formatEditResult(
 	if (preErrors.length > 0) {
 		lines.push(
 			`Note: file had ${preErrors.length} pre-existing syntax error(s) (first: line ${preErrors[0].line}: ${preErrors[0].text})`,
-		);
-	}
-	if (postErrors.length > 0) {
-		lines.push(
-			`Warning: file now has ${postErrors.length} syntax error(s) (first: line ${postErrors[0].line}: ${postErrors[0].text})`,
 		);
 	}
 	return lines.join("\n");
@@ -344,7 +338,7 @@ async function performEdit(
 		const { diff, firstChangedLine } = generateDiffString(lf, newLf);
 		const patch = generateUnifiedPatch(path, lf, newLf);
 
-		const text = formatEditResult(path, result.applied, result.preErrors, result.postErrors);
+		const text = formatEditResult(path, result.applied, result.preErrors);
 		const details: EditToolDetails = { diff, patch, firstChangedLine };
 		return {
 			toolResult: { content: [{ type: "text" as const, text }], details },
@@ -418,7 +412,7 @@ export function registerEditTool(pi: ExtensionAPI) {
 			"Edit a single file. Two modes per edit:",
 			"- Exact mode: oldText + newText — exact text replacement (built-in compatible). When the file's language is supported, oldText is matched structurally first (whole AST nodes whose text is byte-identical to oldText, so comments and strings are skipped), falling back to byte-exact text search. Exact mode takes no structural argument: insertBefore/insertAfter/delete/replace with oldText are rejected — use pattern for those, or insert as text (newText = <new code> + oldText, or oldText + <new code>).",
 			'- Structural mode: pattern + one of replace / insertBefore / insertAfter / delete. Patterns are ast-grep syntax: whitespace-insensitive; $A captures one node, $$$A captures zero or more nodes, $$$ matches any nodes, $_ matches one node without capturing. Variable names must be UPPERCASE ($foo is literal text). Same-name variables must match identical code. One pattern matches one node — capture sequences explicitly (e.g. function body: "function f($$$ARGS) { $$$BODY }"). replace may reference captures ($A, $$$A) with matching arity; every variable in replace must be captured in pattern. context restricts matches to inside a match of another pattern.',
-			'Safety: replacement text is parsed and must be valid code; the whole file is re-parsed after editing and the edit is rejected (file unchanged) if it would introduce new syntax errors. delete removes only the matched node — include trailing punctuation (e.g. "foo();") to remove a whole statement; insertBefore/insertAfter text must be valid standalone code. If a pattern matches multiple nodes, the edit fails and lists all matches with 0-based indices — add matchIndex to pick one, all: true to edit every non-nested match, or narrow the pattern. Unsupported file types (e.g. .txt, .vue, .toml) fall back to exact text replacement.',
+			'Safety: replacement text is parsed and must be valid code; the whole file is re-parsed after editing and the edit is rejected (file unchanged) unless the file parses cleanly afterwards — a file that already had syntax errors must have them fixed by the same edit, and the remaining errors are reported back. delete removes only the matched node — include trailing punctuation (e.g. "foo();") to remove a whole statement; insertBefore/insertAfter text must be valid standalone code. If a pattern matches multiple nodes, the edit fails and lists all matches with 0-based indices — add matchIndex to pick one, all: true to edit every non-nested match, or narrow the pattern. Unsupported file types (e.g. .txt, .vue, .toml) fall back to exact text replacement.',
 		].join("\n"),
 		promptSnippet:
 			"Edit files with AST-aware structural matching (ast-grep): whitespace-insensitive patterns, $VAR capture, validated replacements",
@@ -426,7 +420,7 @@ export function registerEditTool(pi: ExtensionAPI) {
 			"Use edit with pattern + replace for code changes: patterns match whole AST nodes, ignore whitespace, never match inside strings/comments. Capture with $A (one node) / $$$A (zero or more); names must be UPPERCASE, and every $VAR in replace must be captured in pattern with the same arity.",
 			"One edit pattern matches one node: capture sequences explicitly, e.g. a function body as { $$$BODY }, an argument list as ($$$ARGS). Same-name variables must match identical code.",
 			"Preview a risky pattern with ast_find before using it in edit — ast_find lists matches in order, which is edit's matchIndex order. When edit reports multiple matches, add matchIndex or all: true, or narrow the pattern with context.",
-			"edit validates replacements and re-parses the file; a change that would break syntax is rejected without writing. delete removes only the matched node (include the trailing semicolon to delete a statement); insertBefore/insertAfter text must be valid standalone code.",
+			"edit validates replacements and re-parses the file; a change that would leave a syntax error is rejected without writing (fix the reported errors and retry). delete removes only the matched node (include the trailing semicolon to delete a statement); insertBefore/insertAfter text must be valid standalone code.",
 			"Use edit with oldText/newText for non-code files, tiny exact text swaps, or files whose language ast-grep does not support. Exact mode takes no structural argument: to insert around an exact anchor, rewrite the text (newText = <new code> + oldText to insert before, or oldText + <new code> to insert after) instead of reaching for insertBefore/insertAfter.",
 		],
 		parameters: editSchema,

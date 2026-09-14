@@ -393,6 +393,34 @@ fn edit_empty_new_text_still_deletes_text() {
 }
 
 #[test]
+fn edit_broken_file_rejects_an_unrelated_edit() {
+    // a file that already has syntax errors may only be edited by an edit
+    // that leaves it clean; the remaining errors are handed back instead
+    let req = serde_json::json!({
+        "content": "foo(1);\nlet = ;",
+        "edits": [{ "pattern": "foo($A)", "replace": "bar($A)" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("leaves 1 syntax error"), "{err}");
+    assert!(err.contains("line 2"), "{err}");
+}
+
+#[test]
+fn edit_broken_file_accepts_a_fixing_edit() {
+    let req = serde_json::json!({
+        "content": "let = ;\n",
+        "edits": [{ "oldText": "let = ;", "newText": "let a = 1;" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 0);
+    assert_eq!(out["newContent"], "let a = 1;\n");
+    assert_eq!(out["preErrors"].as_array().unwrap().len(), 1);
+    assert_eq!(out["postErrors"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn edit_exact_insert_before_is_rejected() {
     // exact mode takes no op: it used to ignore insertBefore and delete the
     // matched text (newText "" satisfied the replacement slot) instead.
