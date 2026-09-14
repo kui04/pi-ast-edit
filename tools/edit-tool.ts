@@ -22,7 +22,7 @@ const editSchema = Type.Object({
 			oldText: Type.Optional(
 				Type.String({
 					description:
-						"Exact text to replace (built-in compatible mode). Matched structurally when possible (whitespace-insensitive, whole AST nodes only), falling back to exact text search.",
+						'Exact text to replace (built-in compatible mode). Matched structurally first when the file\'s language is supported (whole AST nodes whose text is byte-identical to oldText), falling back to byte-exact text search. Needs newText (pass "" to delete); insertBefore/insertAfter/delete/replace are structural-mode arguments and are rejected here.',
 				}),
 			),
 			newText: Type.Optional(
@@ -416,7 +416,7 @@ export function registerEditTool(pi: ExtensionAPI) {
 		label: "edit (ast-grep)",
 		description: [
 			"Edit a single file. Two modes per edit:",
-			"- Exact mode: oldText + newText — exact text replacement (built-in compatible). When the file's language is supported, oldText is matched structurally first (whitespace-insensitive, whole AST nodes only — never partial tokens or text inside strings/comments), falling back to exact text search.",
+			"- Exact mode: oldText + newText — exact text replacement (built-in compatible). When the file's language is supported, oldText is matched structurally first (whole AST nodes whose text is byte-identical to oldText, so comments and strings are skipped), falling back to byte-exact text search. Exact mode takes no structural argument: insertBefore/insertAfter/delete/replace with oldText are rejected — use pattern for those, or insert as text (newText = <new code> + oldText, or oldText + <new code>).",
 			'- Structural mode: pattern + one of replace / insertBefore / insertAfter / delete. Patterns are ast-grep syntax: whitespace-insensitive; $A captures one node, $$$A captures zero or more nodes, $$$ matches any nodes, $_ matches one node without capturing. Variable names must be UPPERCASE ($foo is literal text). Same-name variables must match identical code. One pattern matches one node — capture sequences explicitly (e.g. function body: "function f($$$ARGS) { $$$BODY }"). replace may reference captures ($A, $$$A) with matching arity; every variable in replace must be captured in pattern. context restricts matches to inside a match of another pattern.',
 			'Safety: replacement text is parsed and must be valid code; the whole file is re-parsed after editing and the edit is rejected (file unchanged) if it would introduce new syntax errors. delete removes only the matched node — include trailing punctuation (e.g. "foo();") to remove a whole statement; insertBefore/insertAfter text must be valid standalone code. If a pattern matches multiple nodes, the edit fails and lists all matches with 0-based indices — add matchIndex to pick one, all: true to edit every non-nested match, or narrow the pattern. Unsupported file types (e.g. .txt, .vue, .toml) fall back to exact text replacement.',
 		].join("\n"),
@@ -427,7 +427,7 @@ export function registerEditTool(pi: ExtensionAPI) {
 			"One edit pattern matches one node: capture sequences explicitly, e.g. a function body as { $$$BODY }, an argument list as ($$$ARGS). Same-name variables must match identical code.",
 			"Preview a risky pattern with ast_find before using it in edit — ast_find lists matches in order, which is edit's matchIndex order. When edit reports multiple matches, add matchIndex or all: true, or narrow the pattern with context.",
 			"edit validates replacements and re-parses the file; a change that would break syntax is rejected without writing. delete removes only the matched node (include the trailing semicolon to delete a statement); insertBefore/insertAfter text must be valid standalone code.",
-			"Use edit with oldText/newText for non-code files or tiny exact text swaps; oldText is still matched structurally when possible.",
+			"Use edit with oldText/newText for non-code files, tiny exact text swaps, or files whose language ast-grep does not support. Exact mode takes no structural argument: to insert around an exact anchor, rewrite the text (newText = <new code> + oldText to insert before, or oldText + <new code> to insert after) instead of reaching for insertBefore/insertAfter.",
 		],
 		parameters: editSchema,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },

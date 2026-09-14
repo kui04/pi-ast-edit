@@ -227,3 +227,15 @@ test("F10: template with delete:true keeps exactly the delete op", {
 	assert.match(result.content[0].text, /Applied 1 edit/);
 	assert.equal(readFileSync(path, "utf8"), "");
 });
+
+test("F11: template with a real insertBefore and oldText is rejected, not applied", {
+	skip: !hasBinary,
+}, async () => {
+	const before = "const a = 1;\nconst b = 2;";
+	const path = file("j.js", before);
+	await assert.rejects(
+		runEdit(path, [template({ oldText: "const a = 1;", insertBefore: "const z = 9;" })]),
+		/insertBefore.*structural-mode/s,
+	);
+	assert.equal(readFileSync(path, "utf8"), before);
+});
