@@ -82,8 +82,10 @@ pub fn run(args: &[String]) -> Result<Value> {
 /// Safety model:
 /// 1. Every replacement/insertion is parsed standalone and must be valid code
 ///    (catches unbalanced brackets, partial fragments, ...).
-/// 2. The whole file is re-parsed after all edits; if the ERROR node count
-///    increased, the batch is rejected and nothing is written.
+/// 2. The whole file is re-parsed after all edits; the batch is rejected and
+///    nothing is written unless the file parses cleanly afterwards — a file
+///    that already had syntax errors must have them fixed by the same edit,
+///    and the remaining errors are handed back to the agent.
 /// 3. A pattern matching multiple nodes fails unless `matchIndex` or `all`
 ///    is given, with every match listed so the agent can disambiguate.
 fn edit_structural(req: &EditRequest, lang: SupportLang) -> Result<EditResult> {
@@ -107,12 +109,19 @@ fn edit_structural(req: &EditRequest, lang: SupportLang) -> Result<EditResult> {
         let ast2 = lang.ast_grep(&new_content);
         collect_errors(&ast2.root())
     };
-    if post_errors.len() > pre_errors.len() {
+    if !post_errors.is_empty() {
+        if pre_errors.is_empty() {
+            bail!(
+                "the edit would introduce {} new syntax error(s); rolled back, file unchanged:\n{}",
+                post_errors.len(),
+                format_errors(&post_errors)
+            );
+        }
         bail!(
-            "the edit would introduce {} new syntax error(s); rolled back, file unchanged (had {}, would have {}):\n{}",
-            post_errors.len() - pre_errors.len(),
-            pre_errors.len(),
+            "the edit leaves {} syntax error(s) in the file ({} pre-existing, {} introduced), so nothing was written — fix the syntax, then retry:\n{}",
             post_errors.len(),
+            pre_errors.len(),
+            post_errors.len().saturating_sub(pre_errors.len()),
             format_errors(&post_errors)
         );
     }
@@ -1231,17 +1240,48 @@ mod tests {
     }
 
     #[test]
-    fn preexisting_errors_reported_but_edit_proceeds() {
-        // file already broken; a valid edit that does not add errors is allowed
-        let r = run_edits(
+    fn preexisting_errors_must_be_cleared_by_the_edit() {
+        // A broken file can only be edited by an edit that leaves it clean:
+        // an unrelated valid edit is rejected with the remaining error list.
+        let err = run_edits(
             "foo(1);\nlet = ;",
             "x.js",
             vec![pattern_edit("foo($A)", "bar($A)")],
         )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("leaves 1 syntax error"), "{msg}");
+        assert!(msg.contains("1 pre-existing, 0 introduced"), "{msg}");
+        assert!(msg.contains("line 2"), "{msg}");
+    }
+
+    #[test]
+    fn fixing_a_preexisting_error_is_allowed() {
+        let r = run_edits(
+            "let = ;\n",
+            "x.js",
+            vec![exact_edit("let = ;", "let a = 1;")],
+        )
         .unwrap();
-        assert_eq!(r.new_content, "bar(1);\nlet = ;");
+        assert_eq!(r.new_content, "let a = 1;\n");
         assert_eq!(r.pre_errors.len(), 1);
-        assert_eq!(r.post_errors.len(), 1);
+        assert_eq!(r.post_errors.len(), 0);
+    }
+
+    #[test]
+    fn swapping_one_error_for_another_is_rejected() {
+        // 1 -> 1 used to pass the old "post <= pre" count check
+        let err = run_edits(
+            "const a = ;\nconst b = 2;\n",
+            "x.js",
+            vec![exact_edit(
+                "const a = ;\nconst b = 2;",
+                "const a = 1;\nlet = ;",
+            )],
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("leaves 1 syntax error"), "{msg}");
     }
 
     #[test]
