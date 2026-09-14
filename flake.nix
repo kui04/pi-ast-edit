@@ -82,6 +82,9 @@
             };
             biome = {
               enable = true;
+              # biome.jsonc ignores the lockfile; biome exits 1 when it is handed an
+              # ignored path, so the hook must not pass it.
+              excludes = [ "package-lock\\.json" ];
               settings = {
                 # Check-only (no --write), matching CI's `biome ci`.
                 write = false;
