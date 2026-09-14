@@ -211,7 +211,7 @@ fn plan_exact(
     content: &str,
     label: &str,
 ) -> Result<Vec<PlannedEdit>> {
-    let old_text = require_old_text(spec, label)?;
+    let old_text = check_exact_spec(spec, label)?;
     if let Ok(pattern) = Pattern::try_new(old_text, lang)
         && !pattern.has_error()
     {
@@ -254,8 +254,10 @@ fn build_context(context: Option<&str>, lang: SupportLang, label: &str) -> Resul
     }
 }
 
-/// OldText every exact-path edit needs, borrowed from the spec.
-fn require_old_text<'a>(spec: &'a EditSpec, label: &str) -> Result<&'a str> {
+/// OldText plus the exact-mode field contract: exact mode takes no structural
+/// argument (silently ignoring one turns "insert" into "delete"), and it
+/// carries its replacement in `newText` (`""` deletes the matched text).
+fn check_exact_spec<'a>(spec: &'a EditSpec, label: &str) -> Result<&'a str> {
     let old_text = spec
         .old_text
         .as_deref()
@@ -263,25 +265,39 @@ fn require_old_text<'a>(spec: &'a EditSpec, label: &str) -> Result<&'a str> {
     if old_text.is_empty() {
         bail!("{label}: oldText must not be empty")
     }
+    let op = [
+        ("insertBefore", spec.insert_before.as_deref()),
+        ("insertAfter", spec.insert_after.as_deref()),
+        ("replace", spec.replace.as_deref()),
+    ]
+    .iter()
+    .find_map(|(name, value)| value.filter(|v| !v.is_empty()).map(|_| *name));
+    if let Some(op) = op {
+        let instead = if op == "replace" {
+            format!("use newText with oldText, or keep pattern + {op}")
+        } else {
+            format!("use pattern + {op}, or oldText + newText")
+        };
+        bail!(
+            "{label}: `{op}` is a structural-mode argument and is ignored in exact mode — {instead}"
+        )
+    }
+    if spec.delete {
+        bail!(
+            "{label}: `delete` is a structural-mode argument — use newText: \"\" to delete the matched text"
+        )
+    }
+    spec.new_text.as_deref().with_context(|| {
+        format!(
+            "{label}: newText is required with oldText — pass `newText: \"\"` to delete the matched text"
+        )
+    })?;
     Ok(old_text)
 }
 
 fn plan_exact_text(content: &str, spec: &EditSpec, label: &str) -> Result<Vec<PlannedEdit>> {
-    let old_text = spec
-        .old_text
-        .as_deref()
-        .with_context(|| format!("{label}: exact mode requires oldText"))?;
-    if old_text.is_empty() {
-        bail!("{label}: oldText must not be empty")
-    }
-    let new_text = spec
-        .new_text
-        .as_deref()
-        .with_context(|| {
-            format!(
-                "{label}: newText is required with oldText — pass `newText: \"\"` to delete the matched text"
-            )
-        })?;
+    let old_text = check_exact_spec(spec, label)?;
+    let new_text = spec.new_text.as_deref().unwrap_or_default();
     let positions: Vec<usize> = content.match_indices(old_text).map(|(i, _)| i).collect();
     if positions.is_empty() {
         let hint = nearest_hint(content, old_text)
@@ -458,11 +474,16 @@ fn build_replace_edit(
 ) -> Result<PlannedEdit> {
     // The exact path carries the replacement in newText and keeps it literal;
     // pattern mode uses replace with $VAR substitution.
-    let replace = spec
-        .replace
-        .as_deref()
-        .or(spec.new_text.as_deref())
-        .unwrap_or("");
+    // Exact mode carries its replacement in newText only: an empty `replace`
+    // sentinel must never shadow it (and must never mean "delete").
+    let replace = if is_exact {
+        spec.new_text.as_deref().unwrap_or("")
+    } else {
+        spec.replace
+            .as_deref()
+            .or(spec.new_text.as_deref())
+            .unwrap_or("")
+    };
     if !is_exact {
         check_replacement_vars(&ctx.pattern_src, replace, label)?;
     }
@@ -961,6 +982,71 @@ mod tests {
         spec.delete = true;
         let r = run_edits("foo(); bar();", "x.js", vec![spec]).unwrap();
         assert_eq!(r.new_content, " bar();");
+    }
+
+    #[test]
+    fn exact_with_insert_before_is_rejected() {
+        // An ignored op used to turn "insert" into "delete the matched node".
+        let mut spec = exact_edit("const x = 1;", "const y = 2;");
+        spec.insert_before = Some("const z = 9;".into());
+        let err = run_edits("const x = 1;", "x.js", vec![spec]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("`insertBefore` is a structural-mode argument"),
+            "{msg}"
+        );
+        assert!(msg.contains("pattern + insertBefore"), "{msg}");
+    }
+
+    #[test]
+    fn exact_with_delete_is_rejected() {
+        let mut spec = exact_edit("const x = 1;", "");
+        spec.delete = true;
+        let err = run_edits("const x = 1;", "x.js", vec![spec]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("`delete` is a structural-mode argument"),
+            "{msg}"
+        );
+        assert!(msg.contains(r#"newText: """#), "{msg}");
+    }
+
+    #[test]
+    fn exact_with_replace_is_rejected() {
+        let mut spec = exact_edit("const x = 1;", "");
+        spec.replace = Some("const y = 1;".into());
+        let err = run_edits("const x = 1;", "x.js", vec![spec]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("`replace` is a structural-mode argument"),
+            "{msg}"
+        );
+        assert!(msg.contains("newText with oldText"), "{msg}");
+    }
+
+    #[test]
+    fn exact_whole_node_without_new_text_is_rejected() {
+        // A whole-node oldText with no newText used to replace the node with "".
+        let mut spec = exact_edit("const x = 1;", "");
+        spec.new_text = None;
+        let err = run_edits("const x = 1;", "x.js", vec![spec]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("newText is required with oldText"), "{msg}");
+    }
+
+    #[test]
+    fn exact_empty_replace_does_not_hijack_new_text() {
+        // "" in replace is a sentinel for exact mode, never the replacement.
+        let mut spec = exact_edit("const x = 1;", "const y = 2;");
+        spec.replace = Some(String::new());
+        let r = run_edits("const x = 1;", "x.js", vec![spec]).unwrap();
+        assert_eq!(r.new_content, "const y = 2;");
+    }
+
+    #[test]
+    fn exact_new_text_empty_still_deletes() {
+        let r = run_edits("const x = 1;", "x.js", vec![exact_edit("const x = 1;", "")]).unwrap();
+        assert_eq!(r.new_content, "");
     }
 
     #[test]

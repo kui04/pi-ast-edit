@@ -393,6 +393,34 @@ fn edit_empty_new_text_still_deletes_text() {
 }
 
 #[test]
+fn edit_exact_insert_before_is_rejected() {
+    // exact mode takes no op: it used to ignore insertBefore and delete the
+    // matched text (newText "" satisfied the replacement slot) instead.
+    let req = serde_json::json!({
+        "content": "const a = 1;\nconst b = 2;",
+        "edits": [{ "oldText": "const a = 1;", "insertBefore": "const z = 9;", "newText": "" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("insertBefore"), "{err}");
+    assert!(err.contains("structural-mode"), "{err}");
+}
+
+#[test]
+fn edit_exact_whole_node_without_new_text_is_rejected() {
+    // a whole-node oldText (structurally matched) used to be deleted silently
+    let req = serde_json::json!({
+        "content": "const a = 1;\nconst b = 2;",
+        "edits": [{ "oldText": "const a = 1;" }]
+    });
+    let (code, out) = run_bin(&["edit", "--path", "x.js"], &req.to_string());
+    assert_eq!(code, 1);
+    let err = out["error"].as_str().unwrap();
+    assert!(err.contains("newText is required with oldText"), "{err}");
+}
+
+#[test]
 fn edit_exact_not_found_reports_the_nearest_line() {
     // indentation off by two spaces: the error must point at the line and show
     // both versions, so the agent does not have to re-read the file to guess
