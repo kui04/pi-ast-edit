@@ -24,10 +24,14 @@ import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent"
  * ```jsonc
  * {
  *   "ast-edit": {
- *     "traceEnabled": true,   // optional; OFF by default — developer log of every edit call
+ *     "traceEnabled": true,    // optional; OFF by default — developer log of every edit call
  *     "tracePath": "…",       // optional override; default `<agentDir>/ast-edit.log.jsonl`
- *     "autoReflect": false,   // optional; ON by default — reflect after turns with new failures
- *     "reflectModel": "provider/modelId", // optional; default = the session model
+ *     "autoReflect": false,    // optional; ON by default — reflect after turns with new failures
+ *     "reflectModel": {        // optional; defaults to the session's model and level
+ *       "providerId": "openrouter",   // provider id; give both ids to switch models
+ *       "modelId": "nvidia/nemotron", // model id
+ *       "thinkingLevel": "high"       // off|minimal|low|medium|high|xhigh|max
+ *     },
  *     "reflectAfterErrors": 3 // trigger: reflect once this many failures piled up;
  *                             // the request then covers all of them, capped at 50
  *   }
@@ -36,6 +40,19 @@ import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent"
  */
 const CONFIG_KEY = "ast-edit";
 
+/** pi thinking levels; `off` and non-reasoning models send no level at all. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+/** Model the reflection request runs on; default is the session model. */
+export interface ReflectModelConfig {
+	/** Provider of the model to run on; give both ids to switch models. */
+	providerId?: string;
+	modelId?: string;
+	/** pi thinking level for the request; default: the provider's own default. */
+	thinkingLevel?: ThinkingLevel;
+}
+
 export interface TraceConfig {
 	/** Developer log of every edit call (default false). */
 	traceEnabled: boolean;
@@ -43,8 +60,8 @@ export interface TraceConfig {
 	tracePath?: string;
 	/** Reflect on new failed edit calls after each turn (default true). */
 	autoReflect: boolean;
-	/** `"provider/modelId"` model override for the reflection request; default the session model. */
-	reflectModel?: string;
+	/** Reflection-request model override; default the session model. */
+	reflectModel?: ReflectModelConfig;
 	/**
 	 * Trigger threshold (default 3): once this many failures have piled up since
 	 * the last verdict, one reflection covers *all* of them (capped at 50 per
@@ -75,12 +92,39 @@ function applyUserConfig(cfg: TraceConfig, e: Record<string, unknown>): void {
 	if (typeof e.traceEnabled === "boolean") cfg.traceEnabled = e.traceEnabled;
 	if (typeof e.tracePath === "string" && e.tracePath.length > 0) cfg.tracePath = e.tracePath;
 	if (typeof e.autoReflect === "boolean") cfg.autoReflect = e.autoReflect;
-	if (typeof e.reflectModel === "string" && e.reflectModel.length > 0) {
-		cfg.reflectModel = e.reflectModel;
-	}
+	const reflectModel = parseReflectModel(e.reflectModel);
+	if (reflectModel) cfg.reflectModel = reflectModel;
 	if (typeof e.reflectAfterErrors === "number" && e.reflectAfterErrors >= 1) {
 		cfg.reflectAfterErrors = Math.floor(e.reflectAfterErrors);
 	}
+}
+
+/**
+ * `{ providerId, modelId, thinkingLevel? }`; wrong types and unknown levels are
+ * ignored. A usable thinking level is enough on its own — the request then runs
+ * on the session model, only at that level.
+ */
+function parseReflectModel(value: unknown): ReflectModelConfig | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const { providerId, modelId, thinkingLevel } = value as Record<string, unknown>;
+	const model = modelIds(providerId, modelId);
+	const level = isThinkingLevel(thinkingLevel) ? thinkingLevel : undefined;
+	if (!model && !level) return undefined;
+	return { ...(model ?? {}), ...(level ? { thinkingLevel: level } : {}) };
+}
+
+/** `{ providerId, modelId }` when both ids are usable, else `undefined`. */
+function modelIds(
+	providerId: unknown,
+	modelId: unknown,
+): { providerId: string; modelId: string } | undefined {
+	if (typeof providerId !== "string" || providerId.length === 0) return undefined;
+	if (typeof modelId !== "string" || modelId.length === 0) return undefined;
+	return { providerId, modelId };
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+	return THINKING_LEVELS.some((level) => level === value);
 }
 
 function readSettingsFile(): string {
@@ -315,40 +359,57 @@ End with a single bullet list titled "Rules to prevent recurrence" — each item
 
 type SessionManagerLike = { getSessionId?: () => string };
 
+/** The clean request we send: system prompt plus one digests-only user message. */
+type ReflectionContext = {
+	systemPrompt?: string;
+	messages: Array<{ role: string; content: string }>;
+};
+
+type ReflectionReply = {
+	content?: Array<{ type: string; text?: string }>;
+	stopReason?: string;
+	errorMessage?: string;
+};
+
 /** Minimal shape of pi's ModelRegistry facade (extensions get the real one). */
 export type ModelRegistryLike = {
 	complete(
 		model: unknown,
-		context: {
-			systemPrompt?: string;
-			messages: Array<{ role: string; content: string }>;
-		},
-		options?: { signal?: AbortSignal },
-	): Promise<{
-		content?: Array<{ type: string; text?: string }>;
-		stopReason?: string;
-		errorMessage?: string;
-	}>;
+		context: ReflectionContext,
+		options?: { signal?: AbortSignal; reasoning?: ThinkingLevel },
+	): Promise<ReflectionReply>;
+	/**
+	 * The facade's runtime, when present: only the simple request path
+	 * (`completeSimple`) maps a pi thinking level onto the provider's own option
+	 * (`reasoningEffort`, `thinking`, …). `complete` takes API-level options,
+	 * where `reasoning` exists for a couple of providers only.
+	 */
+	runtime?: {
+		completeSimple?(
+			model: unknown,
+			context: ReflectionContext,
+			options: { reasoning?: ThinkingLevel },
+		): Promise<ReflectionReply>;
+	};
 };
 
 export type ReflectResult = { ok: true; text: string } | { ok: false; error: string };
 
 /**
- * Model the reflection request runs on: `configured` (`"provider/modelId"`,
- * the same format as pi's `--model` / `enabledModels`) when it resolves, else
- * the session model.
+ * Model the reflection request runs on: the configured `{ providerId, modelId }`
+ * when it is complete and the registry has it, else the session model. A
+ * level-only config therefore just runs the session model at that level.
  */
 export function resolveReflectModel(
 	registry: unknown,
 	sessionModel: unknown,
-	configured: string | undefined,
+	configured: ReflectModelConfig | undefined,
 ): unknown {
-	if (!configured) return sessionModel;
-	const slash = configured.indexOf("/");
-	if (slash <= 0 || slash === configured.length - 1) return sessionModel;
+	const { providerId, modelId } = configured ?? {};
+	if (!providerId || !modelId) return sessionModel;
 	const reg = registry as { find?: (provider: string, id: string) => unknown } | undefined;
 	if (typeof reg?.find !== "function") return sessionModel;
-	return reg.find(configured.slice(0, slash), configured.slice(slash + 1)) ?? sessionModel;
+	return reg.find(providerId, modelId) ?? sessionModel;
 }
 
 /**
@@ -364,6 +425,35 @@ function emptyReplyReason(msg: { stopReason?: string; errorMessage?: string }): 
 	return "empty model response";
 }
 
+/** Whether the model advertises reasoning support; pi gates levels on this too. */
+function supportsReasoning(model: unknown): boolean {
+	return (model as { reasoning?: unknown } | undefined)?.reasoning === true;
+}
+
+/**
+ * Run the reflection request, carrying the thinking level when there is one to
+ * send. Prefer the facade's runtime (`completeSimple` — the path pi's own
+ * summarization uses) because only that one maps a pi level onto the provider's
+ * own option; `complete` takes API-level options and gets the level as a
+ * fallback for the providers that declare `reasoning` themselves.
+ */
+function sendReflection(
+	registry: ModelRegistryLike,
+	model: unknown,
+	context: ReflectionContext,
+	thinkingLevel: ThinkingLevel | undefined,
+): Promise<ReflectionReply> {
+	const reasoning =
+		thinkingLevel && thinkingLevel !== "off" && supportsReasoning(model)
+			? thinkingLevel
+			: undefined;
+	if (!reasoning) return registry.complete(model, context);
+	return (
+		registry.runtime?.completeSimple?.(model, context, { reasoning }) ??
+		registry.complete(model, context, { reasoning })
+	);
+}
+
 /**
  * One clean, session-independent LLM request that reflects on failed edit
  * calls. The host's ModelRegistry performs model + auth resolution; nothing
@@ -373,13 +463,16 @@ export async function reflectOnErrors(
 	registry: ModelRegistryLike,
 	model: unknown,
 	failures: FailedEdit[],
+	thinkingLevel?: ThinkingLevel,
 ): Promise<ReflectResult> {
 	try {
 		const digest = failures.map(compactFailure).join("\n");
-		const msg = await registry.complete(model, {
-			systemPrompt: REFLECTION_SYSTEM,
-			messages: [{ role: "user", content: digest }],
-		});
+		const msg = await sendReflection(
+			registry,
+			model,
+			{ systemPrompt: REFLECTION_SYSTEM, messages: [{ role: "user", content: digest }] },
+			thinkingLevel,
+		);
 		const text = (msg.content ?? [])
 			.filter((c) => c.type === "text" && typeof c.text === "string")
 			.map((c) => c.text as string)
@@ -469,6 +562,8 @@ export async function maybeReflect(
 	ctx: {
 		model?: unknown;
 		modelRegistry?: unknown;
+		/** Effective thinking level of the session model; the request default. */
+		thinkingLevel?: ThinkingLevel;
 		ui?: { notify: (message: string, type?: "info" | "warning" | "error") => void };
 		sessionManager?: SessionReader;
 	},
@@ -479,6 +574,9 @@ export async function maybeReflect(
 	// replacement or reload, and the request can outlive it.
 	const registry = ctx.modelRegistry as ModelRegistryLike | undefined;
 	const model = resolveReflectModel(registry, ctx.model, cfg.reflectModel);
+	// The session's own configuration is the default; only what `reflectModel`
+	// specifies overrides it.
+	const thinkingLevel = cfg.reflectModel?.thinkingLevel ?? ctx.thinkingLevel;
 	const ui = ctx.ui;
 	if (!model || !registry) return; // no model to reflect with
 	const since = laterTs(coveredTs(ctx), reflectedTs);
@@ -490,7 +588,7 @@ export async function maybeReflect(
 	try {
 		// Keep the request bounded: only the newest failures go in.
 		const sample = fresh.slice(-MAX_FAILURES_PER_REFLECTION);
-		const result = await reflectOnErrors(registry, model, sample);
+		const result = await reflectOnErrors(registry, model, sample, thinkingLevel);
 		if (result.ok) {
 			lastFailureNotice = undefined;
 			// The verdict carries the marker; deliverAs nextTurn queues it as context
