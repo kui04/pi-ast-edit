@@ -1,6 +1,6 @@
 [package]
 name = "pi-ast-edit"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "AST-aware code editing backend for the pi-ast-edit pi extension"
 license = "MIT"
