@@ -18,6 +18,7 @@ import {
 	reflectOnErrors,
 	resetReflectionState,
 	resolveReflectModel,
+	type ThinkingLevel,
 } from "../../tools/reflect.ts";
 
 /**
@@ -207,12 +208,46 @@ test("A8: tracePath honored when string, ignored otherwise; default under agent 
 	assert.equal(defaultTracePath(), join(dir, "ast-edit.log.jsonl"));
 });
 
-test("A9: reflectModel honored when a non-empty string, ignored otherwise", () => {
-	withAgentDir({ "ast-edit": { reflectModel: "openrouter/nvidia/nemotron:free" } });
-	assert.equal(loadTraceConfig().reflectModel, "openrouter/nvidia/nemotron:free");
-	for (const bad of [42, true, ""]) {
-		withAgentDir({ "ast-edit": { reflectModel: bad } });
-		assert.equal(loadTraceConfig().reflectModel, undefined, `reflectModel=${JSON.stringify(bad)}`);
+test("A9: reflectModel is { providerId, modelId, thinkingLevel? }; bad shapes are ignored", () => {
+	withAgentDir({
+		"ast-edit": {
+			reflectModel: {
+				providerId: "openrouter",
+				modelId: "nvidia/nemotron:free",
+				thinkingLevel: "high",
+			},
+		},
+	});
+	assert.deepEqual(loadTraceConfig().reflectModel, {
+		providerId: "openrouter",
+		modelId: "nvidia/nemotron:free",
+		thinkingLevel: "high",
+	});
+	// an unknown level is dropped, the model stays
+	withAgentDir({
+		"ast-edit": { reflectModel: { providerId: "openrouter", modelId: "x", thinkingLevel: "HIGH" } },
+	});
+	assert.deepEqual(loadTraceConfig().reflectModel, { providerId: "openrouter", modelId: "x" });
+	// a level alone keeps the session model, so it is a valid config on its own
+	withAgentDir({ "ast-edit": { reflectModel: { thinkingLevel: "medium" } } });
+	assert.deepEqual(loadTraceConfig().reflectModel, { thinkingLevel: "medium" });
+	const bad = [
+		{ providerId: "openrouter" },
+		{ modelId: "nvidia/nemotron:free" },
+		{ providerId: "openrouter", thinkingLevel: "HIGH" },
+		{ providerId: "", modelId: "x" },
+		{ providerId: "openrouter", modelId: "" },
+		{ providerId: 42, modelId: "x" },
+		42,
+		true,
+	];
+	for (const value of bad) {
+		withAgentDir({ "ast-edit": { reflectModel: value } });
+		assert.equal(
+			loadTraceConfig().reflectModel,
+			undefined,
+			`reflectModel=${JSON.stringify(value)}`,
+		);
 	}
 });
 
@@ -507,6 +542,59 @@ test("E3: provider error surfaces stopReason / errorMessage, not 'empty response
 	});
 });
 
+/** Registry that records which request path ran and with which reasoning level. */
+function levelRegistry(withRuntime: boolean) {
+	const seen: Array<{ path: string; reasoning?: string }> = [];
+	const reply = { content: [{ type: "text", text: "rules" }] };
+	const runtime = {
+		completeSimple: async (_m: unknown, _c: unknown, options: { reasoning?: string }) => {
+			seen.push({
+				path: "completeSimple",
+				...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
+			});
+			return reply;
+		},
+	};
+	const registry = {
+		...(withRuntime ? { runtime } : {}),
+		complete: async (_m: unknown, _c: unknown, options?: { reasoning?: string }) => {
+			seen.push({
+				path: "complete",
+				...(options?.reasoning ? { reasoning: options.reasoning } : {}),
+			});
+			return reply;
+		},
+	} as unknown as ModelRegistryLike;
+	return { registry, seen };
+}
+
+test("E4: the thinking level rides the simple request path, with a complete() fallback", async () => {
+	const model = { id: "m", reasoning: true };
+	const simple = levelRegistry(true);
+	assert.deepEqual(await reflectOnErrors(simple.registry, model, [failure()], "high"), {
+		ok: true,
+		text: "rules",
+	});
+	assert.deepEqual(simple.seen, [{ path: "completeSimple", reasoning: "high" }]);
+
+	// no runtime on the facade (or an older host): the level still goes out
+	const plain = levelRegistry(false);
+	await reflectOnErrors(plain.registry, model, [failure()], "high");
+	assert.deepEqual(plain.seen, [{ path: "complete", reasoning: "high" }]);
+});
+
+test("E5: no level is sent for `off`, a non-reasoning model, or no configured level", async () => {
+	for (const [model, level] of [
+		[{ id: "m", reasoning: true }, "off"],
+		[{ id: "m", reasoning: false }, "high"],
+		[{ id: "m", reasoning: true }, undefined],
+	] as Array<[unknown, "off" | "high" | undefined]>) {
+		const { registry, seen } = levelRegistry(true);
+		await reflectOnErrors(registry, model, [failure()], level);
+		assert.deepEqual(seen, [{ path: "complete" }], `model=${JSON.stringify(model)} level=${level}`);
+	}
+});
+
 // --- F. maybeReflect --------------------------------------------------------
 
 function autoPi() {
@@ -633,17 +721,34 @@ test("F4: failure notifies once, writes no marker, retries next turn", async () 
 	assert.equal(notices.length, 1, "identical failure reported once");
 });
 
-test("F5: reflectModel override is used when it resolves", async () => {
-	withAgentDir({ "ast-edit": { reflectModel: "openrouter/nvidia/x:free" } });
+test("F5: configured model and thinking level are used when they resolve", async () => {
+	withAgentDir({
+		"ast-edit": {
+			reflectModel: { providerId: "openrouter", modelId: "nvidia/x:free", thinkingLevel: "high" },
+		},
+	});
 	const { registry, calls } = fakeRegistry("configured rules");
 	const used: unknown[] = [];
+	const levels: Array<string | undefined> = [];
+	const delegate = (model: unknown, context: unknown) =>
+		(registry as unknown as { complete: (m: unknown, c: unknown) => Promise<unknown> }).complete(
+			model,
+			context,
+		);
 	const tracking = {
-		find: (provider: string, id: string) => ({ provider, id, tag: "configured" }),
+		find: (provider: string, id: string) => ({ provider, id, tag: "configured", reasoning: true }),
+		// the level is only portable on the simple path, so that is the one used
+		runtime: {
+			completeSimple: async (model: unknown, context: unknown, options: { reasoning?: string }) => {
+				used.push(model);
+				levels.push(options.reasoning);
+				return delegate(model, context);
+			},
+		},
 		complete: async (model: unknown, context: unknown) => {
 			used.push(model);
-			return (
-				registry as unknown as { complete: (m: unknown, c: unknown) => Promise<unknown> }
-			).complete(model, context);
+			levels.push(undefined);
+			return delegate(model, context);
 		},
 	} as unknown as ModelRegistryLike;
 	const { pi } = autoPi();
@@ -656,7 +761,10 @@ test("F5: reflectModel override is used when it resolves", async () => {
 		]),
 	);
 	assert.equal(calls.length, 1);
-	assert.deepEqual(used, [{ provider: "openrouter", id: "nvidia/x:free", tag: "configured" }]);
+	assert.deepEqual(used, [
+		{ provider: "openrouter", id: "nvidia/x:free", tag: "configured", reasoning: true },
+	]);
+	assert.deepEqual(levels, ["high"]);
 });
 
 test("F6: a second turn_end of the same run does not reflect again", async () => {
@@ -793,21 +901,124 @@ test("F11: a pile-up is capped at the 50 newest failures", async () => {
 	assert.deepEqual(sent[0].details, { coveredTs: "2026-01-01T00:59:00.000Z" });
 });
 
+test("F12: a level-only config keeps the session model and still sends the level", async () => {
+	withAgentDir({ "ast-edit": { reflectModel: { thinkingLevel: "medium" } } });
+	const models: unknown[] = [];
+	const levels: Array<string | undefined> = [];
+	const registry = {
+		find: () => {
+			throw new Error("find must not run for a level-only config");
+		},
+		runtime: {
+			completeSimple: async (m: unknown, _c: unknown, options: { reasoning?: string }) => {
+				models.push(m);
+				levels.push(options.reasoning);
+				return { content: [{ type: "text", text: "think harder" }] };
+			},
+		},
+	} as unknown as ModelRegistryLike;
+	const { pi, sent } = autoPi();
+	const session = { id: "session-model", reasoning: true };
+	await maybeReflect(pi, {
+		model: session,
+		modelRegistry: registry,
+		sessionManager: {
+			getSessionId: () => "s1",
+			getBranch: () => [
+				...failedEdit("f12a", "2026-01-01T00:00:01.000Z"),
+				...failedEdit("f12b", "2026-01-01T00:00:02.000Z"),
+				...failedEdit("f12c", "2026-01-01T00:00:03.000Z"),
+			],
+		},
+	});
+	assert.deepEqual(models, [session]);
+	assert.deepEqual(levels, ["medium"]);
+	assert.equal(sent.length, 1);
+});
+
+test("F13: the session's thinking level is the default, a configured one overrides it", async () => {
+	const levels: Array<string | undefined> = [];
+	const used: unknown[] = [];
+	const registry = {
+		runtime: {
+			completeSimple: async (m: unknown, _c: unknown, options: { reasoning?: string }) => {
+				used.push(m);
+				levels.push(options.reasoning);
+				return { content: [{ type: "text", text: "rules" }] };
+			},
+		},
+		complete: async (m: unknown, _c: unknown, options?: { reasoning?: string }) => {
+			used.push(m);
+			levels.push(options?.reasoning);
+			return { content: [{ type: "text", text: "rules" }] };
+		},
+	} as unknown as ModelRegistryLike;
+	const session = { id: "session-model", reasoning: true };
+	const ctx = (thinkingLevel: ThinkingLevel | undefined) => ({
+		model: session,
+		thinkingLevel,
+		modelRegistry: registry,
+		sessionManager: {
+			getSessionId: () => "s1",
+			getBranch: () => [
+				...failedEdit("f13a", "2026-01-01T00:00:01.000Z"),
+				...failedEdit("f13b", "2026-01-01T00:00:02.000Z"),
+				...failedEdit("f13c", "2026-01-01T00:00:03.000Z"),
+			],
+		},
+	});
+	const { pi } = autoPi();
+
+	// nothing configured: the session's own level is used
+	withAgentDir({});
+	await maybeReflect(pi, ctx("high"));
+	assert.deepEqual(levels, ["high"]);
+
+	// a configured level wins over the session's
+	resetReflectionState();
+	withAgentDir({ "ast-edit": { reflectModel: { thinkingLevel: "low" } } });
+	await maybeReflect(pi, ctx("high"));
+	assert.deepEqual(levels, ["high", "low"]);
+
+	// session "off" (or a non-reasoning model) sends nothing at all
+	resetReflectionState();
+	withAgentDir({});
+	await maybeReflect(pi, ctx("off"));
+
+	// switching the model does not change the default level
+	resetReflectionState();
+	withAgentDir({
+		"ast-edit": { reflectModel: { providerId: "openrouter", modelId: "nvidia/x:free" } },
+	});
+	const other = { id: "configured-model", reasoning: true };
+	await maybeReflect(pi, {
+		...ctx("high"),
+		modelRegistry: { ...registry, find: () => other } as unknown as ModelRegistryLike,
+	});
+
+	assert.deepEqual(levels, ["high", "low", undefined, "high"]);
+	assert.deepEqual(used, [session, session, session, other]);
+});
+
 // --- G. resolveReflectModel -------------------------------------------------
 
-test("G1: configured model wins, everything else falls back to the session model", () => {
+test("G1: the configured model wins, everything else falls back to the session model", () => {
 	const session = { id: "session-model" };
 	const target = { id: "configured-model" };
+	const configured = { providerId: "openrouter", modelId: "nvidia/x:free" };
 	const registry = {
 		find: (provider: string, id: string) =>
 			provider === "openrouter" && id === "nvidia/x:free" ? target : undefined,
 	};
 
 	assert.equal(resolveReflectModel(registry, session, undefined), session);
-	assert.equal(resolveReflectModel(registry, session, "openrouter/nvidia/x:free"), target);
-	assert.equal(resolveReflectModel(registry, session, "openrouter/unknown"), session);
-	for (const bad of ["no-slash", "/leading", "trailing/"]) {
-		assert.equal(resolveReflectModel(registry, session, bad), session, bad);
-	}
-	assert.equal(resolveReflectModel(undefined, session, "openrouter/nvidia/x:free"), session);
+	assert.equal(resolveReflectModel(registry, session, configured), target);
+	assert.equal(
+		resolveReflectModel(registry, session, { providerId: "openrouter", modelId: "unknown" }),
+		session,
+	);
+	// a level-only config (and a half-given model) stays on the session model
+	assert.equal(resolveReflectModel(registry, session, { thinkingLevel: "high" }), session);
+	assert.equal(resolveReflectModel(registry, session, { providerId: "openrouter" }), session);
+	assert.equal(resolveReflectModel(undefined, session, configured), session);
 });

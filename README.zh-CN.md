@@ -73,7 +73,11 @@ E2E(较慢,需要真实模型):`cp scripts/.env.example scripts/.env`,设置 `PI
     "traceEnabled": true,  // 可选;默认关闭 — 记录每次 edit 调用的开发者日志
     "tracePath": "…",      // 可选覆盖;默认 `~/.pi/agent/ast-edit.log.jsonl`
     "autoReflect": false,  // 可选;默认开启 — 有新失败时回合后自动反思
-    "reflectModel": "provider/modelId", // 可选;默认与主模型一致
+    "reflectModel": {           // 可选;默认沿用主模型的模型与思考等级
+      "providerId": "openrouter",   // 提供方 id(两个 id 齐全才切换模型)
+      "modelId": "nvidia/nemotron", // 模型 id
+      "thinkingLevel": "high"       // 可选;off|minimal|low|medium|high|xhigh|max
+    },
     "reflectAfterErrors": 5 // 可选;新失败累积到多少条才反思(默认 3)
   }
 }

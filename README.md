@@ -98,11 +98,15 @@ Both are configured via `~/.pi/agent/settings.json`:
 {
   "ast-edit": {
     "traceEnabled": true,  // optional; OFF by default — developer log of every edit call
-    "tracePath": "…",      // optional override; default `~/.pi/agent/ast-edit.log.jsonl`
+    "tracePath": "…",     // optional override; default `~/.pi/agent/ast-edit.log.jsonl`
     "autoReflect": false,  // optional; ON by default — reflect after turns with new failures
-    "reflectModel": "provider/modelId", // optional; default = the session model
-    "reflectAfterErrors": 5 // optional; trigger: reflect once this many new failures piled up,
-                            // then cover all un-reflected ones (default 3)
+    "reflectModel": {               // optional; defaults to the session's model and level
+      "providerId": "openrouter",   // provider id; give both ids to switch models
+      "modelId": "nvidia/nemotron", // model id
+      "thinkingLevel": "high"       // optional; off|minimal|low|medium|high|xhigh|max
+    },
+    "reflectAfterErrors": 5     // optional; trigger: reflect once this many new failures piled up,
+                                // then cover all un-reflected ones (default 3)
   }
 }
 ```
