@@ -35,5 +35,7 @@ toolchain; never `--no-verify`. CI checks (`checks.yml`) mirror these commands; 
 - Binary resolution: `PI_AST_EDIT_BIN` → `target/debug` → `result/bin` (nix build)
   → `target/release` → postinstall cache — local builds first, download last.
   Missing: `edit` falls back to pi's builtin; `ast_find`/`ast_languages` fail fast.
-- Release: tag push → `release.yml` builds 6 platform binaries; `checks.yml` runs as gate.
+- Release: tag push → `release.yml` builds 5 platform binaries; `checks.yml` runs as gate.
+  Bump the version in `Cargo.toml` (the flake reads it), `Cargo.lock`, `package.json` and
+  `package-lock.json` before tagging.
 - Telemetry & reflection: passive turn-end reflection (on by default; input = failed `edit` tool results on the session branch; verdict queued as an `ast-edit.reflection` custom message) + opt-in developer JSONL trace (`agentDir/ast-edit.log.jsonl`) — never throw, stay compact (no file contents).
