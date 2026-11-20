@@ -30,12 +30,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ast-grep-core"
+version = "0.51.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "344ae2c96e608eda1364851b4d2b94325f58fc8a68bf374ca119d6e2fcd9cfa0"
+dependencies = [
+ "bit-set",
+ "regex",
+ "thiserror",
+ "tree-sitter",
+]
+
+[[package]]
 name = "ast-grep-language"
 version = "0.45.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "144473f99493f0941ae7f96018f00b41c1571ece0e6686b38a551a2fc5ecad8b"
 dependencies = [
- "ast-grep-core",
+ "ast-grep-core 0.45.3",
  "ignore",
  "serde",
  "tree-sitter",
@@ -290,7 +302,7 @@ name = "pi-ast-edit"
 version = "0.2.3"
 dependencies = [
  "anyhow",
- "ast-grep-core",
+ "ast-grep-core 0.51.3",
  "ast-grep-language",
  "serde",
  "serde_json",
